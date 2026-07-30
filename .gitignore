@@ -1,0 +1,99 @@
+# Node.js
+node_modules/
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+yarn.lock
+pnpm-lock.yaml
+pnpm-debug.log*
+
+# Build outputs
+dist/
+build/
+out/
+
+# Environment variables
+.env
+.env.*
+!.env.example
+
+# IDE and editor files
+.idea/
+.vscode/
+*.swp
+*.swo
+*~
+.project
+.classpath
+.c9/
+*.launch
+.settings/
+*.sublime-*
+*.code-workspace*
+
+# Agents config
+.claude/*
+.poolside/*
+.codemap/*
+*.md
+!README.md
+!CONTRIBUTING.md
+!SECURITY.md
+!TRADEMARKS.md
+.agents/
+skills-lock.json
+/AGENTS.md
+/CLAUDE.md
+
+# Licensed font binaries are provisioned locally or by CI and must not be committed.
+public/licensed-fonts/
+
+# OS files
+.DS_Store
+.DS_Store?
+._*
+.Spotlight-V100
+.Trashes
+ehthumbs.db
+Thumbs.db
+desktop.ini
+
+# TypeScript
+*.tsbuildinfo
+
+# Tauri
+src-tauri/target/
+src-tauri/gen/
+src-tauri/*.bundle
+src-tauri/*.dmg
+src-tauri/*.app
+src-tauri/*.deb
+src-tauri/*.rpm
+src-tauri/*.msi
+*.msi
+*.exe
+
+# Rust (if you have Rust workspace files)
+**/*.rs.bk
+*.pdb
+
+# Logs
+logs/
+*.log
+lerna-debug.log*
+
+# Temporary files
+tmp/
+temp/
+*.tmp
+*.temp
+
+# Cache
+.cache/
+.parcel-cache/
+.vite/
+
+# Coverage
+coverage/
+*.lcov
+.nyc_output/

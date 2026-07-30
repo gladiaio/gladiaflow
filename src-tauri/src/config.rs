@@ -1,0 +1,483 @@
+// File-based config manager for API key storage
+use crate::audio::AudioDeviceSelection;
+use crate::vocabulary::{default_custom_vocabulary, CustomVocabEntry};
+use std::fs;
+use std::path::PathBuf;
+use std::sync::{Mutex, OnceLock};
+
+static CONFIG_LOCK: OnceLock<Mutex<()>> = OnceLock::new();
+
+fn config_mutex() -> &'static Mutex<()> {
+    CONFIG_LOCK.get_or_init(|| Mutex::new(()))
+}
+
+/// Default endpointing (seconds) used when the field is absent.
+pub const DEFAULT_ENDPOINTING: f64 = 0.1;
+
+fn default_hotkey() -> String {
+    if cfg!(target_os = "macos") {
+        "Fn".to_string()
+    } else {
+        "Ctrl".to_string()
+    }
+}
+
+#[derive(serde::Serialize, serde::Deserialize, Clone)]
+#[serde(default)]
+struct Config {
+    #[serde(skip_serializing_if = "Option::is_none")]
+    api_key: Option<String>,
+    hotkey: Option<String>,
+    languages: Option<Vec<String>>,
+    code_switching: Option<bool>,
+    /// Whether to leave the final transcription on the clipboard after a
+    /// dictation session (instead of restoring the user's original clipboard).
+    copy_to_clipboard: Option<bool>,
+    custom_vocabulary: Option<Vec<CustomVocabEntry>>,
+    /// Endpointing duration (seconds of silence before an utterance is
+    /// considered final). Missing (older config files) defaults to 0.1 —
+    /// see `endpointing`.
+    endpointing: Option<f64>,
+    /// Input selection policy. Older versions did not persist this setting;
+    /// those installs intentionally migrate to the latency-safe automatic mode.
+    audio_device_selection: Option<AudioDeviceSelection>,
+    /// One-time flag: whether we've cleared the stale macOS Accessibility (TCC)
+    /// entry left by older ad-hoc-signed builds. See `is_tcc_reset_done`.
+    accessibility_tcc_reset_done: Option<bool>,
+    /// Whether the native Accessibility prompt has been shown at least once.
+    accessibility_prompted: Option<bool>,
+    /// One-time TCC cleanup generation; bumped when a new migration reset is required.
+    accessibility_cleanup_generation: Option<u32>,
+    /// The app version that last ran. Used to seed vocabulary on upgrade and for logging.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    installed_version: Option<String>,
+}
+
+impl Default for Config {
+    fn default() -> Self {
+        Self {
+            api_key: None,
+            hotkey: Some(default_hotkey()),
+            languages: Some(vec!["en".to_string()]),
+            code_switching: Some(false),
+            copy_to_clipboard: Some(false),
+            custom_vocabulary: Some(default_custom_vocabulary()),
+            endpointing: Some(DEFAULT_ENDPOINTING),
+            audio_device_selection: Some(AudioDeviceSelection::Automatic),
+            accessibility_tcc_reset_done: Some(false),
+            accessibility_prompted: Some(false),
+            accessibility_cleanup_generation: Some(0),
+            installed_version: None,
+        }
+    }
+}
+
+impl Config {
+    /// Replace `None` with sensible defaults for fields that should never be null on disk.
+    fn fill_defaults(&mut self) {
+        let defaults = Config::default();
+        if self.hotkey.is_none() {
+            self.hotkey = defaults.hotkey;
+        }
+        if self.languages.is_none() {
+            self.languages = defaults.languages;
+        }
+        if self.code_switching.is_none() {
+            self.code_switching = defaults.code_switching;
+        }
+        if self.copy_to_clipboard.is_none() {
+            self.copy_to_clipboard = defaults.copy_to_clipboard;
+        }
+        if self.custom_vocabulary.is_none() {
+            self.custom_vocabulary = defaults.custom_vocabulary;
+        }
+        if self.endpointing.is_none() {
+            self.endpointing = defaults.endpointing;
+        }
+        if self.audio_device_selection.is_none() {
+            self.audio_device_selection = defaults.audio_device_selection;
+        }
+        if self.accessibility_tcc_reset_done.is_none() {
+            self.accessibility_tcc_reset_done = defaults.accessibility_tcc_reset_done;
+        }
+        if self.accessibility_prompted.is_none() {
+            self.accessibility_prompted = defaults.accessibility_prompted;
+        }
+        if self.accessibility_cleanup_generation.is_none() {
+            self.accessibility_cleanup_generation = defaults.accessibility_cleanup_generation;
+        }
+    }
+}
+
+pub fn get_config_path() -> PathBuf {
+    let base = dirs::config_dir().unwrap_or_else(|| {
+        let fallback = std::env::var("HOME")
+            .or_else(|_| std::env::var("USERPROFILE"))
+            .unwrap_or_else(|_| std::env::temp_dir().to_string_lossy().into_owned());
+        PathBuf::from(fallback)
+    });
+    base.join("gladiaflow").join("config.json")
+}
+
+fn with_config(f: impl FnOnce(&mut Config)) -> Result<(), String> {
+    let _guard = config_mutex().lock().unwrap();
+    let mut config = load_config_inner();
+    f(&mut config);
+    write_config_inner(&config)
+}
+
+fn read_config<T>(f: impl FnOnce(&Config) -> T) -> T {
+    let _guard = config_mutex().lock().unwrap();
+    f(&load_config_inner())
+}
+
+fn load_config_inner() -> Config {
+    let path = get_config_path();
+    let mut config = if !path.exists() {
+        Config::default()
+    } else {
+        fs::read_to_string(&path)
+            .ok()
+            .and_then(|json| serde_json::from_str(&json).ok())
+            .unwrap_or_default()
+    };
+    config.fill_defaults();
+    config
+}
+
+fn write_config_inner(config: &Config) -> Result<(), String> {
+    let path = get_config_path();
+    let mut config = config.clone();
+    preserve_custom_vocabulary(&mut config);
+    config.fill_defaults();
+    if let Some(parent) = path.parent() {
+        fs::create_dir_all(parent).map_err(|e| e.to_string())?;
+    }
+    let json = serde_json::to_string_pretty(&config).map_err(|e| e.to_string())?;
+    let temp_path = path.with_extension("tmp");
+    fs::write(&temp_path, json).map_err(|e| e.to_string())?;
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        fs::set_permissions(&temp_path, std::fs::Permissions::from_mode(0o600)).ok();
+    }
+    fs::rename(&temp_path, &path).map_err(|e| e.to_string())?;
+    Ok(())
+}
+
+/// Keep vocabulary on disk when a partial config write omits it.
+fn preserve_custom_vocabulary(config: &mut Config) {
+    if config.custom_vocabulary.is_some() {
+        return;
+    }
+    let path = get_config_path();
+    if !path.exists() {
+        return;
+    }
+    let Ok(text) = fs::read_to_string(&path) else {
+        return;
+    };
+    let Ok(value) = serde_json::from_str::<serde_json::Value>(&text) else {
+        return;
+    };
+    if let Some(vocab) = value.get("custom_vocabulary") {
+        if let Ok(parsed) = serde_json::from_value::<Vec<CustomVocabEntry>>(vocab.clone()) {
+            if !parsed.is_empty() {
+                config.custom_vocabulary = Some(parsed);
+            }
+        }
+    }
+}
+
+/// Endpointing in seconds. Defaults to `DEFAULT_ENDPOINTING` when absent.
+/// Used internally (e.g. as the fallback in `init_gladia_session`); the
+/// `get_endpointing` Tauri command wraps this for the frontend.
+pub fn endpointing() -> f64 {
+    read_config(|config| config.endpointing.unwrap_or(DEFAULT_ENDPOINTING))
+}
+
+/// Whether the final transcription should be left on the clipboard after a
+/// dictation session. Defaults to `false` when absent. The
+/// `get_copy_to_clipboard` Tauri command wraps this for the frontend.
+pub fn copy_to_clipboard() -> bool {
+    read_config(|config| config.copy_to_clipboard.unwrap_or(false))
+}
+
+pub fn audio_device_selection() -> AudioDeviceSelection {
+    read_config(|config| {
+        config
+            .audio_device_selection
+            .clone()
+            .unwrap_or(AudioDeviceSelection::Automatic)
+    })
+}
+
+pub fn save_custom_vocabulary(vocabulary: Vec<CustomVocabEntry>) -> Result<(), String> {
+    with_config(|config| {
+        config.custom_vocabulary = Some(vocabulary);
+    })
+}
+
+pub fn get_custom_vocabulary() -> Result<Vec<CustomVocabEntry>, String> {
+    Ok(read_config(|config| {
+        config.custom_vocabulary.clone().unwrap_or_default()
+    }))
+}
+
+/// Seed the built-in default vocabulary when the list is missing or empty.
+pub fn seed_default_vocabulary_if_empty() -> Result<bool, String> {
+    let mut seeded = false;
+    with_config(|config| {
+        let empty = config
+            .custom_vocabulary
+            .as_ref()
+            .is_none_or(|entries| entries.is_empty());
+        if empty {
+            config.custom_vocabulary = Some(default_custom_vocabulary());
+            seeded = true;
+        }
+    })?;
+    Ok(seeded)
+}
+
+/// Whether the one-time macOS Accessibility TCC reset has already run.
+/// Missing field (older config files) is treated as "not done".
+pub fn is_tcc_reset_done() -> bool {
+    read_config(|config| config.accessibility_tcc_reset_done.unwrap_or(false))
+}
+
+pub fn mark_tcc_reset_done() -> Result<(), String> {
+    with_config(|config| {
+        config.accessibility_tcc_reset_done = Some(true);
+    })
+}
+
+/// The app version recorded on the last run, or `None` for a fresh install.
+pub fn get_installed_version() -> Option<String> {
+    read_config(|config| config.installed_version.clone())
+}
+
+pub fn set_installed_version(version: &str) -> Result<(), String> {
+    with_config(|config| {
+        config.installed_version = Some(version.to_string());
+    })
+}
+
+/// Whether the native Accessibility prompt has been shown.
+pub fn is_accessibility_prompted() -> bool {
+    read_config(|config| config.accessibility_prompted.unwrap_or(false))
+}
+
+pub fn mark_accessibility_prompted() -> Result<(), String> {
+    with_config(|config| {
+        config.accessibility_prompted = Some(true);
+    })
+}
+
+pub fn get_cleanup_generation() -> u32 {
+    read_config(|config| config.accessibility_cleanup_generation.unwrap_or(0))
+}
+
+pub fn set_cleanup_generation(generation: u32) -> Result<(), String> {
+    with_config(|config| {
+        config.accessibility_cleanup_generation = Some(generation);
+    })
+}
+
+// --- Tauri commands ---
+// These own their persistence logic directly (no internal wrapper indirection),
+// mirroring the command style in `vocabulary.rs`.
+
+#[tauri::command]
+pub async fn save_api_key(api_key: String) -> Result<(), String> {
+    with_config(|config| {
+        config.api_key = Some(api_key);
+    })
+}
+
+#[tauri::command]
+pub async fn get_api_key() -> Result<Option<String>, String> {
+    Ok(read_config(|config| config.api_key.clone()))
+}
+
+#[tauri::command]
+pub async fn delete_api_key() -> Result<(), String> {
+    let _guard = config_mutex().lock().unwrap();
+    let path = get_config_path();
+    if path.exists() {
+        fs::remove_file(&path).map_err(|e| e.to_string())?;
+    }
+    Ok(())
+}
+
+#[tauri::command]
+pub async fn save_hotkey(hotkey: String) -> Result<(), String> {
+    crate::hotkey::validate_hotkey(&hotkey)?;
+    log::info!("[hotkey] saving shortcut config: {hotkey:?}");
+    with_config(|config| {
+        config.hotkey = Some(hotkey);
+    })
+}
+
+#[tauri::command]
+pub async fn get_hotkey() -> Result<Option<String>, String> {
+    Ok(read_config(|config| config.hotkey.clone()))
+}
+
+#[tauri::command]
+pub async fn save_language_settings(
+    languages: Vec<String>,
+    code_switching: bool,
+) -> Result<(), String> {
+    with_config(|config| {
+        config.languages = Some(languages);
+        config.code_switching = Some(code_switching);
+    })
+}
+
+#[tauri::command]
+pub async fn get_language_settings() -> Result<(Option<Vec<String>>, Option<bool>), String> {
+    Ok(read_config(|config| {
+        (config.languages.clone(), config.code_switching)
+    }))
+}
+
+#[tauri::command]
+pub async fn save_audio_device_selection(selection: AudioDeviceSelection) -> Result<(), String> {
+    with_config(|config| {
+        config.audio_device_selection = Some(selection);
+    })
+}
+
+#[tauri::command]
+pub async fn get_audio_device_selection() -> Result<AudioDeviceSelection, String> {
+    Ok(audio_device_selection())
+}
+
+#[tauri::command]
+pub async fn save_endpointing(endpointing: f64) -> Result<(), String> {
+    with_config(|config| {
+        config.endpointing = Some(endpointing.clamp(0.05, 1.0));
+    })
+}
+
+#[tauri::command]
+pub async fn get_endpointing() -> Result<f64, String> {
+    Ok(endpointing())
+}
+
+#[tauri::command]
+pub async fn save_copy_to_clipboard(enabled: bool) -> Result<(), String> {
+    with_config(|config| {
+        config.copy_to_clipboard = Some(enabled);
+    })
+}
+
+#[tauri::command]
+pub async fn get_copy_to_clipboard() -> Result<bool, String> {
+    Ok(copy_to_clipboard())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn default_config_serializes_without_nulls() {
+        let json = serde_json::to_string_pretty(&Config::default()).unwrap();
+        assert!(!json.contains("null"));
+        assert!(!json.contains("api_key"));
+        assert!(!json.contains("installed_version"));
+    }
+
+    #[test]
+    fn explicit_nulls_are_filled_on_load() {
+        let json = r#"{
+            "api_key": null,
+            "hotkey": null,
+            "languages": null,
+            "code_switching": null,
+            "copy_to_clipboard": null,
+            "custom_vocabulary": null,
+            "endpointing": null,
+            "accessibility_tcc_reset_done": null,
+            "accessibility_prompted": null,
+            "accessibility_cleanup_generation": null,
+            "installed_version": null
+        }"#;
+        let mut config: Config = serde_json::from_str(json).unwrap();
+        config.fill_defaults();
+        assert_eq!(config.hotkey.as_deref(), Some(default_hotkey().as_str()));
+        assert_eq!(config.languages, Some(vec!["en".to_string()]));
+        assert_eq!(config.code_switching, Some(false));
+        assert_eq!(config.copy_to_clipboard, Some(false));
+        assert_eq!(config.custom_vocabulary, Some(default_custom_vocabulary()));
+        assert_eq!(config.endpointing, Some(DEFAULT_ENDPOINTING));
+        assert_eq!(
+            config.audio_device_selection,
+            Some(AudioDeviceSelection::Automatic)
+        );
+        assert_eq!(config.accessibility_tcc_reset_done, Some(false));
+        assert_eq!(config.accessibility_prompted, Some(false));
+        assert_eq!(config.accessibility_cleanup_generation, Some(0));
+        assert!(config.api_key.is_none());
+        assert!(config.installed_version.is_none());
+    }
+
+    #[test]
+    fn accessibility_prompted_defaults_to_false() {
+        let config = Config::default();
+        assert_eq!(config.accessibility_prompted, Some(false));
+    }
+
+    #[test]
+    fn accessibility_cleanup_generation_defaults_to_zero() {
+        let config = Config::default();
+        assert_eq!(config.accessibility_cleanup_generation, Some(0));
+    }
+
+    #[test]
+    fn missing_audio_selection_migrates_to_automatic() {
+        let mut config: Config = serde_json::from_str("{}").unwrap();
+        config.fill_defaults();
+        assert_eq!(
+            config.audio_device_selection,
+            Some(AudioDeviceSelection::Automatic)
+        );
+    }
+
+    #[test]
+    fn config_with_api_key_serializes_without_nulls() {
+        let mut config = Config {
+            api_key: Some("test-key".to_string()),
+            ..Config::default()
+        };
+        config.fill_defaults();
+        let json = serde_json::to_string_pretty(&config).unwrap();
+        assert!(!json.contains("null"));
+        let loaded: Config = serde_json::from_str(&json).unwrap();
+        assert_eq!(loaded.api_key.as_deref(), Some("test-key"));
+        assert_eq!(loaded.hotkey.as_deref(), Some(default_hotkey().as_str()));
+    }
+
+    #[test]
+    fn seed_default_vocabulary_if_empty_skips_non_empty() {
+        let existing = vec![CustomVocabEntry {
+            value: "acme".to_string(),
+            pronunciations: None,
+            language: None,
+            intensity: 0.5,
+        }];
+        let config = Config {
+            custom_vocabulary: Some(existing.clone()),
+            ..Config::default()
+        };
+        let empty = config
+            .custom_vocabulary
+            .as_ref()
+            .is_none_or(|entries| entries.is_empty());
+        assert!(!empty);
+        assert_ne!(config.custom_vocabulary, Some(default_custom_vocabulary()));
+        assert_eq!(config.custom_vocabulary, Some(existing));
+    }
+}
