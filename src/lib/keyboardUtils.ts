@@ -9,6 +9,22 @@ const MODIFIER_MAP: Record<string, string> = {
   AltRight: "Alt",
 };
 
+// Read before KeyboardEvent.key, since macOS Option composes: Opt+Space emits
+// U+00A0, not " ". Position-invariant codes only — punctuation and digits move
+// between layouts, so those must still come from the key.
+const STABLE_LOGICAL_FROM_CODE: Record<string, string> = {
+  Space: "Space",
+  Enter: "Enter",
+  Tab: "Tab",
+  Backspace: "Backspace",
+  Delete: "Delete",
+  Escape: "Escape",
+  ArrowUp: "Up",
+  ArrowDown: "Down",
+  ArrowLeft: "Left",
+  ArrowRight: "Right",
+};
+
 /** Stable logical names for non-printable keys from KeyboardEvent.key */
 const LOGICAL_KEY_FROM_EVENT_KEY: Record<string, string> = {
   " ": "Space",
@@ -96,11 +112,16 @@ export function normalizeModifierFromCode(code: string): string | null {
 }
 
 /**
- * Logical non-modifier key token from KeyboardEvent.key.
+ * Logical non-modifier key token, read from KeyboardEvent.key so it follows the
+ * active layout — except for position-invariant keys, which come from the code.
  * Returns null for modifiers, dead keys, IME composition, or unsupported keys.
  */
 export function normalizeCapturedKey(event: KeyboardEvent): string | null {
-  const { key } = event;
+  const { key, code } = event;
+
+  const stable = STABLE_LOGICAL_FROM_CODE[code];
+  if (stable) return stable;
+  if (/^F\d{1,2}$/.test(code)) return code;
 
   if (key === "Dead" || key === "Process" || key === "Unidentified") {
     return null;
