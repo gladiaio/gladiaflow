@@ -14,6 +14,9 @@ fn config_mutex() -> &'static Mutex<()> {
 /// Default endpointing (seconds) used when the field is absent.
 pub const DEFAULT_ENDPOINTING: f64 = 0.1;
 
+/// Default activation mode used when the field is absent.
+pub const DEFAULT_ACTIVATION_MODE: &str = "push-to-talk";
+
 fn default_hotkey() -> String {
     if cfg!(target_os = "macos") {
         "Fn".to_string()
@@ -33,6 +36,9 @@ struct Config {
     /// Whether to leave the final transcription on the clipboard after a
     /// dictation session (instead of restoring the user's original clipboard).
     copy_to_clipboard: Option<bool>,
+    /// How the trigger key starts a dictation: "push-to-talk" (hold) or
+    /// "toggle" (press once to start, once to stop).
+    activation_mode: Option<String>,
     custom_vocabulary: Option<Vec<CustomVocabEntry>>,
     /// Endpointing duration (seconds of silence before an utterance is
     /// considered final). Missing (older config files) defaults to 0.1 —
@@ -61,6 +67,7 @@ impl Default for Config {
             languages: Some(vec!["en".to_string()]),
             code_switching: Some(false),
             copy_to_clipboard: Some(false),
+            activation_mode: Some(DEFAULT_ACTIVATION_MODE.to_string()),
             custom_vocabulary: Some(default_custom_vocabulary()),
             endpointing: Some(DEFAULT_ENDPOINTING),
             audio_device_selection: Some(AudioDeviceSelection::Automatic),
@@ -87,6 +94,9 @@ impl Config {
         }
         if self.copy_to_clipboard.is_none() {
             self.copy_to_clipboard = defaults.copy_to_clipboard;
+        }
+        if self.activation_mode.is_none() {
+            self.activation_mode = defaults.activation_mode;
         }
         if self.custom_vocabulary.is_none() {
             self.custom_vocabulary = defaults.custom_vocabulary;
@@ -376,6 +386,26 @@ pub async fn save_copy_to_clipboard(enabled: bool) -> Result<(), String> {
 #[tauri::command]
 pub async fn get_copy_to_clipboard() -> Result<bool, String> {
     Ok(copy_to_clipboard())
+}
+
+#[tauri::command]
+pub async fn save_activation_mode(mode: String) -> Result<(), String> {
+    if mode != "toggle" && mode != DEFAULT_ACTIVATION_MODE {
+        return Err(format!("Unknown activation mode: {mode}"));
+    }
+    with_config(|config| {
+        config.activation_mode = Some(mode);
+    })
+}
+
+#[tauri::command]
+pub async fn get_activation_mode() -> Result<String, String> {
+    Ok(read_config(|config| {
+        config
+            .activation_mode
+            .clone()
+            .unwrap_or_else(|| DEFAULT_ACTIVATION_MODE.to_string())
+    }))
 }
 
 #[cfg(test)]
