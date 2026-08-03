@@ -8,6 +8,7 @@ use std::time::{Duration, Instant};
 use tauri::menu::{Menu, MenuItem};
 use tauri::tray::TrayIconBuilder;
 use tauri::{async_runtime::spawn, Emitter, Manager, State};
+use tauri_plugin_autostart::ManagerExt;
 use tokio::sync::Mutex as TokioMutex;
 
 mod audio;
@@ -65,6 +66,9 @@ pub struct AppState {
     pub tray_animation: Arc<TokioMutex<Option<tauri::async_runtime::JoinHandle<()>>>>,
     pub region: &'static str,
 }
+
+/// Passed to the app by the autostart entry so it can stay in the tray.
+const HIDDEN_LAUNCH_FLAG: &str = "--hidden";
 
 const TRAY_ID: &str = "main-tray";
 const TRAY_ICON_IDLE: &[u8] = include_bytes!("../icons/32x32.png");
@@ -874,6 +878,26 @@ async fn minimize_window(window: tauri::Window) -> Result<(), String> {
     window.minimize().map_err(|e| e.to_string())
 }
 
+/// Whether the app is registered to start on login (registry Run key on
+/// Windows, LaunchAgent on macOS).
+#[tauri::command]
+fn get_autostart(app: tauri::AppHandle) -> Result<bool, String> {
+    app.autolaunch().is_enabled().map_err(|e| e.to_string())
+}
+
+/// Register or remove the login entry. The entry carries `--hidden`, so an
+/// automatic launch goes straight to the tray without showing the window.
+#[tauri::command]
+fn set_autostart(app: tauri::AppHandle, enabled: bool) -> Result<(), String> {
+    let manager = app.autolaunch();
+    if enabled {
+        manager.enable()
+    } else {
+        manager.disable()
+    }
+    .map_err(|e| e.to_string())
+}
+
 #[tauri::command]
 async fn register_dictation_hotkey(
     hotkey: String,
@@ -1112,6 +1136,10 @@ fn main() {
                 .build(),
         )
         .plugin(tauri_plugin_global_shortcut::Builder::new().build())
+        .plugin(tauri_plugin_autostart::init(
+            tauri_plugin_autostart::MacosLauncher::LaunchAgent,
+            Some(vec![HIDDEN_LAUNCH_FLAG]),
+        ))
         .plugin(tauri_plugin_dialog::init())
         .plugin(tauri_plugin_notification::init())
         .setup(|app| {
@@ -1211,8 +1239,22 @@ fn main() {
                 })
                 .build(app)?;
 
+            // The window starts hidden (see tauri.conf.json) so an autostart
+            // launch never flashes a window; a manual launch shows it here.
+            let hidden_launch = std::env::args().any(|arg| arg == HIDDEN_LAUNCH_FLAG);
+
             // Intercept window close: hide instead of destroying
             if let Some(window) = app.get_webview_window("main") {
+                if hidden_launch {
+                    #[cfg(target_os = "macos")]
+                    let _ = window
+                        .app_handle()
+                        .set_activation_policy(tauri::ActivationPolicy::Accessory);
+                } else {
+                    let _ = window.show();
+                    let _ = window.set_focus();
+                }
+
                 let w = window.clone();
                 window.on_window_event(move |event| {
                     if let tauri::WindowEvent::CloseRequested { api, .. } = event {
@@ -1256,6 +1298,8 @@ fn main() {
             show_window,
             hide_window,
             minimize_window,
+            get_autostart,
+            set_autostart,
             config::save_hotkey,
             config::get_hotkey,
             config::save_language_settings,

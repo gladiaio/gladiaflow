@@ -1,3 +1,5 @@
+import { useEffect, useState } from "react";
+import { invoke } from "@tauri-apps/api/core";
 import type { AppSettings, AudioDeviceInfo } from "../types";
 import {
   formatKeySymbol,
@@ -67,6 +69,19 @@ export function AppSettingsView({
   onDone: () => void;
   onOpenLogs: () => void;
 }) {
+  const [autostart, setAutostart] = useState(false);
+
+  useEffect(() => {
+    invoke<boolean>("get_autostart")
+      .then(setAutostart)
+      .catch(() => {});
+  }, []);
+
+  const toggleAutostart = async (enabled: boolean) => {
+    await invoke("set_autostart", { enabled });
+    setAutostart(enabled);
+  };
+
   const renderKbdKeys = (keys: string[]) =>
     sortKeys(keys).map((key, i) => (
       <kbd key={i} className="shortcut-kbd">
@@ -214,28 +229,49 @@ export function AppSettingsView({
         </div>
       </div>
 
-      <div className="form-group">
-        <label className="form-label">
-          Copy to clipboard
-          <InfoTooltip label="About copy to clipboard">
-            <strong>Copy to clipboard</strong>
-            When on, the full transcription is left on your clipboard after each
-            dictation.
-          </InfoTooltip>
-        </label>
-        <label className="toggle-switch" title="Copy to clipboard">
-          <input
-            type="checkbox"
-            checked={settings.copyToClipboard}
-            onChange={(e) =>
-              setSettings({
-                ...settings,
-                copyToClipboard: e.target.checked,
-              })
-            }
-          />
-          <span className="toggle-slider" />
-        </label>
+      <div className="settings-row">
+        <div className="form-group">
+          <label className="form-label">
+            Copy to clipboard
+            <InfoTooltip label="About copy to clipboard">
+              <strong>Copy to clipboard</strong>
+              When on, the full transcription is left on your clipboard after
+              each dictation.
+            </InfoTooltip>
+          </label>
+          <label className="toggle-switch" title="Copy to clipboard">
+            <input
+              type="checkbox"
+              checked={settings.copyToClipboard}
+              onChange={(e) =>
+                setSettings({
+                  ...settings,
+                  copyToClipboard: e.target.checked,
+                })
+              }
+            />
+            <span className="toggle-slider" />
+          </label>
+        </div>
+
+        <div className="form-group">
+          <label className="form-label">
+            Launch at login
+            <InfoTooltip label="About launch at login">
+              <strong>Launch at login</strong>
+              When on, GladiaFlow starts with your session and stays in the tray
+              instead of opening its window.
+            </InfoTooltip>
+          </label>
+          <label className="toggle-switch" title="Launch at login">
+            <input
+              type="checkbox"
+              checked={autostart}
+              onChange={(e) => void toggleAutostart(e.target.checked)}
+            />
+            <span className="toggle-slider" />
+          </label>
+        </div>
       </div>
 
       <div className="form-group">
