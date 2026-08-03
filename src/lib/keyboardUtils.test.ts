@@ -39,6 +39,24 @@ describe("normalizeCapturedKey", () => {
     expect(normalizeCapturedKey(keyEvent("F5", "F5"))).toBe("F5");
   });
 
+  it("resolves position-invariant keys from the code, not the character", () => {
+    expect(
+      normalizeCapturedKey(keyEvent("\u00A0", "Space", { altKey: true })),
+    ).toBe("Space");
+    expect(
+      normalizeCapturedKey(keyEvent("ArrowUp", "ArrowUp", { altKey: true })),
+    ).toBe("Up");
+    expect(normalizeCapturedKey(keyEvent("F5", "F5", { altKey: true }))).toBe(
+      "F5",
+    );
+  });
+
+  it("keeps reading layout-dependent keys from the character", () => {
+    // Semicolon is `m` and Digit1 is `&` on AZERTY.
+    expect(normalizeCapturedKey(keyEvent("m", "Semicolon"))).toBe("M");
+    expect(normalizeCapturedKey(keyEvent("&", "Digit1"))).toBe("&");
+  });
+
   it("rejects dead keys and IME", () => {
     expect(normalizeCapturedKey(keyEvent("Dead", "KeyQ"))).toBeNull();
     expect(normalizeCapturedKey(keyEvent("Process", "KeyA"))).toBeNull();
