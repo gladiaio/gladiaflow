@@ -1264,6 +1264,8 @@ fn main() {
             config::get_endpointing,
             config::save_copy_to_clipboard,
             config::get_copy_to_clipboard,
+            config::save_activation_mode,
+            config::get_activation_mode,
             config::save_audio_device_selection,
             config::get_audio_device_selection,
             vocabulary::save_custom_vocabulary,

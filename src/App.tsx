@@ -7,6 +7,7 @@ import type {
   TranscriptionHistoryPage,
   AudioDeviceInfo,
   AudioDeviceSelection,
+  ActivationMode,
 } from "./types";
 import { invoke } from "@tauri-apps/api/core";
 import { getVersion } from "@tauri-apps/api/app";
@@ -190,6 +191,7 @@ export default function App() {
   const vocabularySettingsLoaded = useRef(false);
   const endpointingLoaded = useRef(false);
   const copyToClipboardLoaded = useRef(false);
+  const activationModeLoaded = useRef(false);
   const audioDeviceSelectionLoaded = useRef(false);
 
   const isRecordingRef = useRef(false);
@@ -288,6 +290,12 @@ export default function App() {
       enabled: settings.copyToClipboard,
     }).catch(console.error);
   }, [settings.copyToClipboard]);
+  useEffect(() => {
+    if (!activationModeLoaded.current) return;
+    invoke("save_activation_mode", { mode: settings.activationMode }).catch(
+      console.error,
+    );
+  }, [settings.activationMode]);
   useEffect(() => {
     if (!audioDeviceSelectionLoaded.current) return;
     invoke("save_audio_device_selection", {
@@ -463,6 +471,10 @@ export default function App() {
         "get_copy_to_clipboard",
       ).catch(() => false);
 
+      const savedActivationMode = await invoke<ActivationMode>(
+        "get_activation_mode",
+      ).catch(() => "push-to-talk" as ActivationMode);
+
       const savedAudioDeviceSelection = await invoke<AudioDeviceSelection>(
         "get_audio_device_selection",
       ).catch(() => ({ mode: "automatic" }) as AudioDeviceSelection);
@@ -478,6 +490,7 @@ export default function App() {
           : {}),
         endpointing: savedEndpointing,
         copyToClipboard: savedCopyToClipboard,
+        activationMode: savedActivationMode,
         audioDeviceSelection: savedAudioDeviceSelection,
         customVocabulary: savedVocabulary,
       }));
@@ -485,6 +498,7 @@ export default function App() {
       vocabularySettingsLoaded.current = true;
       endpointingLoaded.current = true;
       copyToClipboardLoaded.current = true;
+      activationModeLoaded.current = true;
       audioDeviceSelectionLoaded.current = true;
       setSettingsReady(true);
     };
