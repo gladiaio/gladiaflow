@@ -113,7 +113,7 @@ export function CustomVocabularyView({
         <button
           type="button"
           className="doc-link"
-          onClick={() => void invoke("open_url", { url: DOCS_URL })}
+          onClick={() => void invoke("open_external_url", { url: DOCS_URL })}
         >
           Learn more ↗
         </button>
