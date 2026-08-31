@@ -1917,6 +1917,15 @@ select.form-input {
   font-size: var(--font-size-14);
 }
 
+.config-error-shell {
+  padding: var(--space-8);
+  text-align: center;
+}
+
+.config-error-shell .setup-desc {
+  max-width: 440px;
+}
+
 @keyframes spin {
   to {
     transform: rotate(360deg);
