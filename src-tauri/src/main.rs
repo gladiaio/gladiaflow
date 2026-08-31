@@ -1286,6 +1286,7 @@ fn main() {
             config::save_api_key,
             config::get_api_key,
             config::delete_api_key,
+            config::reset_corrupted_config,
             init_gladia_session,
             test_gladia_connection,
             list_transcription_history,

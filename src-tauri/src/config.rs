@@ -354,6 +354,80 @@ fn delete_api_key_at(path: &Path) -> Result<(), String> {
 }
 
 #[tauri::command]
+pub async fn reset_corrupted_config(confirmed: bool) -> Result<String, String> {
+    let _guard = config_mutex().lock().unwrap();
+    let timestamp = chrono::Utc::now()
+        .format("%Y%m%dT%H%M%S%3fZ")
+        .to_string();
+    reset_corrupted_config_at(&get_config_path(), confirmed, &timestamp)
+        .map(|path| path.to_string_lossy().into_owned())
+}
+
+fn reset_corrupted_config_at(
+    path: &Path,
+    confirmed: bool,
+    timestamp: &str,
+) -> Result<PathBuf, String> {
+    if !confirmed {
+        return Err("Settings reset requires explicit user confirmation.".into());
+    }
+
+    if load_config_from_path(path).is_ok() {
+        return Err("Settings reset refused because the configuration is readable.".into());
+    }
+
+    let stem = path
+        .file_stem()
+        .and_then(|value| value.to_str())
+        .unwrap_or("config");
+    let extension = path
+        .extension()
+        .and_then(|value| value.to_str())
+        .unwrap_or("json");
+    let backup_path = path.with_file_name(format!("{stem}.broken-{timestamp}.{extension}"));
+    if backup_path.exists() {
+        return Err(format!(
+            "Settings backup already exists at {}.",
+            backup_path.display()
+        ));
+    }
+
+    fs::rename(path, &backup_path).map_err(|error| {
+        format!(
+            "Failed to back up unreadable settings from {} to {}: {error}",
+            path.display(),
+            backup_path.display()
+        )
+    })?;
+
+    if let Err(write_error) = write_config_to_path(path, &Config::default()) {
+        let temp_path = path.with_extension("tmp");
+        if temp_path.is_file() {
+            let _ = fs::remove_file(&temp_path);
+        }
+        if let Err(restore_error) = fs::rename(&backup_path, path) {
+            let message = format!(
+                "Failed to create fresh settings ({write_error}) and failed to restore the backup ({restore_error}). Backup remains at {}.",
+                backup_path.display()
+            );
+            log::error!("[config] {message}");
+            return Err(message);
+        }
+
+        let message =
+            format!("Failed to create fresh settings; the original file was restored: {write_error}");
+        log::error!("[config] {message}");
+        return Err(message);
+    }
+
+    log::info!(
+        "[config] user-confirmed settings reset succeeded; unreadable config backed up to {}",
+        backup_path.display()
+    );
+    Ok(backup_path)
+}
+
+#[tauri::command]
 pub async fn save_hotkey(hotkey: String) -> Result<(), String> {
     crate::hotkey::validate_hotkey(&hotkey)?;
     log::info!("[hotkey] saving shortcut config: {hotkey:?}");
@@ -641,5 +715,68 @@ mod tests {
         assert!(loaded.api_key.is_none());
         assert_eq!(loaded.hotkey.as_deref(), Some("CmdRight"));
         assert_eq!(loaded.installed_version.as_deref(), Some("1.0.0"));
+    }
+
+    #[test]
+    fn corrupted_config_reset_requires_explicit_confirmation() {
+        let dir = TestConfigDir::new();
+        let path = dir.config_path();
+        let malformed = r#"{"api_key":"secret""#;
+        fs::write(&path, malformed).unwrap();
+
+        let result = reset_corrupted_config_at(&path, false, "20260831T120000000Z");
+
+        assert!(result.is_err());
+        assert_eq!(fs::read_to_string(&path).unwrap(), malformed);
+    }
+
+    #[test]
+    fn corrupted_config_reset_refuses_a_readable_config() {
+        let dir = TestConfigDir::new();
+        let path = dir.config_path();
+        let config = Config {
+            api_key: Some("secret".to_string()),
+            ..Config::default()
+        };
+        write_config_to_path(&path, &config).unwrap();
+
+        let result = reset_corrupted_config_at(&path, true, "20260831T120000000Z");
+
+        assert!(result.is_err());
+        assert_eq!(
+            load_config_from_path(&path).unwrap().api_key.as_deref(),
+            Some("secret")
+        );
+    }
+
+    #[test]
+    fn corrupted_config_reset_backs_up_the_original_and_writes_defaults() {
+        let dir = TestConfigDir::new();
+        let path = dir.config_path();
+        let malformed = r#"{"api_key":"secret""#;
+        fs::write(&path, malformed).unwrap();
+
+        let backup =
+            reset_corrupted_config_at(&path, true, "20260831T120000000Z").unwrap();
+
+        assert_eq!(fs::read_to_string(&backup).unwrap(), malformed);
+        let reset = load_config_from_path(&path).unwrap();
+        assert!(reset.api_key.is_none());
+        assert_eq!(reset.hotkey.as_deref(), Some(default_hotkey().as_str()));
+    }
+
+    #[test]
+    fn corrupted_config_reset_restores_the_original_when_default_write_fails() {
+        let dir = TestConfigDir::new();
+        let path = dir.config_path();
+        let malformed = r#"{"api_key":"secret""#;
+        fs::write(&path, malformed).unwrap();
+        fs::create_dir(path.with_extension("tmp")).unwrap();
+
+        let result = reset_corrupted_config_at(&path, true, "20260831T120000000Z");
+
+        assert!(result.is_err());
+        assert_eq!(fs::read_to_string(&path).unwrap(), malformed);
+        assert!(!dir.0.join("config.broken-20260831T120000000Z.json").exists());
     }
 }
