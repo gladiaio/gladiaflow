@@ -9,6 +9,7 @@ use tauri::menu::{Menu, MenuItem};
 use tauri::tray::TrayIconBuilder;
 use tauri::{async_runtime::spawn, Emitter, Manager, State};
 use tokio::sync::Mutex as TokioMutex;
+use url::Url;
 
 mod audio;
 mod config;
@@ -258,12 +259,66 @@ fn list_transcription_history(
 
 #[tauri::command]
 fn open_external_url(url: String) -> Result<(), String> {
-    const ALLOWED_PREFIX: &str = "https://app.gladia.io/";
-    if !url.starts_with(ALLOWED_PREFIX) {
-        return Err("Only Gladia dashboard URLs can be opened".to_string());
-    }
+    let url = validate_external_url(&url)?;
     // Detached launch: default browser on macOS/Windows/Linux without blocking the app.
-    open::that_detached(&url).map_err(|e| e.to_string())
+    open::that_detached(url.as_str()).map_err(|e| e.to_string())
+}
+
+fn validate_external_url(url: &str) -> Result<Url, String> {
+    let url = Url::parse(url).map_err(|_| "Invalid external URL".to_string())?;
+    let is_allowed_host = url.host_str().is_some_and(|host| {
+        host == "gladia.io"
+            || host
+                .strip_suffix(".gladia.io")
+                .is_some_and(|subdomain| !subdomain.is_empty())
+    });
+    let has_credentials = !url.username().is_empty() || url.password().is_some();
+
+    if url.scheme() != "https"
+        || !is_allowed_host
+        || url.port_or_known_default() != Some(443)
+        || has_credentials
+    {
+        return Err("Only trusted Gladia URLs can be opened".to_string());
+    }
+
+    Ok(url)
+}
+
+#[cfg(test)]
+mod external_url_tests {
+    use super::validate_external_url;
+
+    #[test]
+    fn accepts_trusted_gladia_urls() {
+        for url in [
+            "https://gladia.io/",
+            "https://app.gladia.io/apikeys",
+            "https://docs.gladia.io/chapters/audio-intelligence/custom-vocabulary",
+            "https://app.gladia.io/transcriptions/live/session-id?source=gladiaflow",
+            "https://nested.internal.gladia.io/path",
+        ] {
+            assert!(validate_external_url(url).is_ok(), "should allow {url}");
+        }
+    }
+
+    #[test]
+    fn rejects_untrusted_or_malformed_urls() {
+        for url in [
+            "http://app.gladia.io/apikeys",
+            "https://evil.example/phish",
+            "https://evilgladia.io/phish",
+            "https://app.gladia.io.evil.example/phish",
+            "https://app.gladia.io@evil.example/phish",
+            "https://attacker@app.gladia.io/phish",
+            "https://app.gladia.io:444/phish",
+            "file:///tmp/phish",
+            "javascript:alert(1)",
+            "not a url",
+        ] {
+            assert!(validate_external_url(url).is_err(), "should reject {url}");
+        }
+    }
 }
 
 #[tauri::command]
@@ -947,27 +1002,6 @@ async fn open_system_settings(panel: String) -> Result<(), String> {
 }
 
 #[tauri::command]
-async fn open_url(url: String) -> Result<(), String> {
-    #[cfg(target_os = "macos")]
-    {
-        std::process::Command::new("open")
-            .arg(&url)
-            .spawn()
-            .map_err(|e| e.to_string())?;
-    }
-
-    #[cfg(target_os = "windows")]
-    {
-        std::process::Command::new("cmd")
-            .args(["/C", "start", "", &url])
-            .spawn()
-            .map_err(|e| e.to_string())?;
-    }
-
-    Ok(())
-}
-
-#[tauri::command]
 async fn check_microphone_permission() -> Result<String, String> {
     tokio::task::spawn_blocking(microphone_permission::check_status_fresh)
         .await
@@ -1277,7 +1311,6 @@ fn main() {
             get_accessibility_state,
             dev_reset_accessibility_tcc,
             open_system_settings,
-            open_url,
             check_microphone_permission,
             request_microphone_permission,
             set_tray_activity,
