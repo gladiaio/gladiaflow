@@ -47,7 +47,7 @@ import {
   SHORT_EMPTY_DICTATION_LIMIT,
   updateHoldModeWarningStreak,
 } from "./lib/holdModeWarning";
-import { loadSavedApiKey } from "./lib/configLoad";
+import { loadSavedApiKey, resetCorruptedConfig } from "./lib/configLoad";
 import { SidebarNav, type NavScreen } from "./components/SidebarNav";
 import { AppSettingsView } from "./components/AppSettingsView";
 import { TranscriptionSettingsView } from "./components/TranscriptionSettingsView";
@@ -58,6 +58,7 @@ import { CustomVocabularyView } from "./components/CustomVocabularyView";
 import { HistoryView } from "./components/HistoryView";
 import { HISTORY_PAGE_SIZE } from "./components/HistoryView";
 import { HoldModeWarningToast } from "./components/HoldModeWarningToast";
+import { ConfigResetDialog } from "./components/ConfigResetDialog";
 
 type Screen = NavScreen | "permissions" | "api-onboarding";
 
@@ -135,6 +136,10 @@ export default function App() {
   const [isTestingApiKey, setIsTestingApiKey] = useState(false);
   const [configLoadPending, setConfigLoadPending] = useState(true);
   const [configLoadError, setConfigLoadError] = useState<string | null>(null);
+  const [configResetConfirmationOpen, setConfigResetConfirmationOpen] =
+    useState(false);
+  const [isResettingConfig, setIsResettingConfig] = useState(false);
+  const [configResetError, setConfigResetError] = useState<string | null>(null);
   const [transcript, setTranscript] = useState<string>("");
   const [isRecording, setIsRecording] = useState(false);
   const [isProcessing, setIsProcessing] = useState(false);
@@ -454,6 +459,27 @@ export default function App() {
     }
     setConfigLoadPending(false);
   }, []);
+
+  const handleResetCorruptedConfig = useCallback(async () => {
+    setIsResettingConfig(true);
+    setConfigResetError(null);
+    const result = await resetCorruptedConfig();
+    if (!result.ok) {
+      await logError("[config] user-confirmed settings reset failed").catch(
+        () => {},
+      );
+      setConfigResetError(result.message);
+      setIsResettingConfig(false);
+      return;
+    }
+
+    await logInfo(
+      "[config] user-confirmed settings reset completed; reloading defaults",
+    ).catch(() => {});
+    setConfigResetConfirmationOpen(false);
+    setIsResettingConfig(false);
+    await loadApiKeyFromConfig();
+  }, [loadApiKeyFromConfig]);
 
   useEffect(() => {
     const init = async () => {
@@ -1695,7 +1721,26 @@ export default function App() {
           >
             Open logs folder
           </button>
+          <button
+            className="btn btn-ghost config-reset-trigger"
+            onClick={() => {
+              setConfigResetError(null);
+              setConfigResetConfirmationOpen(true);
+            }}
+          >
+            Reset settings…
+          </button>
         </div>
+        <ConfigResetDialog
+          open={configResetConfirmationOpen}
+          isResetting={isResettingConfig}
+          error={configResetError}
+          onCancel={() => {
+            setConfigResetConfirmationOpen(false);
+            setConfigResetError(null);
+          }}
+          onConfirm={handleResetCorruptedConfig}
+        />
       </main>
     );
   }
