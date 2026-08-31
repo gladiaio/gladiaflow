@@ -222,7 +222,10 @@ async fn init_gladia_session(
         .filter(|entries| !entries.is_empty())
         .or_else(|| config::get_custom_vocabulary().ok())
         .unwrap_or_default();
-    let endpointing = endpointing.unwrap_or_else(config::endpointing);
+    let endpointing = match endpointing {
+        Some(endpointing) => endpointing,
+        None => config::endpointing()?,
+    };
     gladia
         .init_session(
             &api_key,
@@ -424,7 +427,10 @@ async fn subscribe_to_transcriptions(
         let mut cleaner = utterance_cleaner::UtteranceCleaner::new();
         // When enabled, the final transcription is left on the clipboard at
         // session end instead of restoring the user's original clipboard.
-        let copy_to_clipboard = config::copy_to_clipboard();
+        let copy_to_clipboard = config::copy_to_clipboard().unwrap_or_else(|error| {
+            log::error!("[config] failed to load copy-to-clipboard setting; using false: {error}");
+            false
+        });
         let mut final_transcript: Option<String> = None;
         // Snapshot the user's clipboard once so it can be restored at session end.
         let original_clipboard = clipboard_get();
@@ -1162,8 +1168,18 @@ fn main() {
             });
 
             let current_version = env!("CARGO_PKG_VERSION");
-            let installed = config::get_installed_version();
-            let version_changed = installed.as_deref() != Some(current_version);
+            let installed = match config::get_installed_version() {
+                Ok(installed) => Some(installed),
+                Err(error) => {
+                    log::error!(
+                        "[config] failed to load installed version; skipping config migrations: {error}"
+                    );
+                    None
+                }
+            };
+            let version_changed = installed
+                .as_ref()
+                .is_some_and(|installed| installed.as_deref() != Some(current_version));
 
             // One-time TCC cleanup for legacy bundle ids / signing migrations (FDE-147).
             // Does NOT run on every version bump — stable signing keeps the grant alive.
@@ -1175,7 +1191,10 @@ fn main() {
                 if version_changed {
                     log::info!(
                         "Post-update accessibility re-validation (v{} -> v{current_version})",
-                        installed.as_deref().unwrap_or("none")
+                        installed
+                            .as_ref()
+                            .and_then(|installed| installed.as_deref())
+                            .unwrap_or("none")
                     );
                 }
                 let _ = permissions::accessibility::check_and_log_state();
