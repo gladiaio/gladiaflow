@@ -140,7 +140,10 @@ mod macos {
 
 pub fn check_state() -> AccessibilityState {
     let trusted = macos::is_trusted();
-    let prompted = crate::config::is_accessibility_prompted();
+    let prompted = crate::config::is_accessibility_prompted().unwrap_or_else(|error| {
+        log::error!("[config] failed to load accessibility prompt state; using false: {error}");
+        false
+    });
     classify(trusted, prompted)
 }
 
@@ -178,8 +181,8 @@ pub fn check_and_log_state() -> AccessibilityState {
 
 /// One-time migration: clear stale TCC rows from legacy bundle ids / signing changes.
 pub fn maybe_run_migration_reset() -> Result<bool, String> {
-    let tcc_reset_done = crate::config::is_tcc_reset_done();
-    let cleanup_generation = crate::config::get_cleanup_generation();
+    let tcc_reset_done = crate::config::is_tcc_reset_done()?;
+    let cleanup_generation = crate::config::get_cleanup_generation()?;
     if !is_tcc_cleanup_pending(tcc_reset_done, cleanup_generation) {
         return Ok(false);
     }

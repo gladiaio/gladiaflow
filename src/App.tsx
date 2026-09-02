@@ -47,6 +47,7 @@ import {
   SHORT_EMPTY_DICTATION_LIMIT,
   updateHoldModeWarningStreak,
 } from "./lib/holdModeWarning";
+import { loadSavedApiKey, resetCorruptedConfig } from "./lib/configLoad";
 import { SidebarNav, type NavScreen } from "./components/SidebarNav";
 import { AppSettingsView } from "./components/AppSettingsView";
 import { TranscriptionSettingsView } from "./components/TranscriptionSettingsView";
@@ -57,6 +58,7 @@ import { CustomVocabularyView } from "./components/CustomVocabularyView";
 import { HistoryView } from "./components/HistoryView";
 import { HISTORY_PAGE_SIZE } from "./components/HistoryView";
 import { HoldModeWarningToast } from "./components/HoldModeWarningToast";
+import { ConfigResetDialog } from "./components/ConfigResetDialog";
 
 type Screen = NavScreen | "permissions" | "api-onboarding";
 
@@ -132,6 +134,12 @@ export default function App() {
   const [isApiKeyLocked, setIsApiKeyLocked] = useState(false);
   const [hasSavedApiKey, setHasSavedApiKey] = useState(false);
   const [isTestingApiKey, setIsTestingApiKey] = useState(false);
+  const [configLoadPending, setConfigLoadPending] = useState(true);
+  const [configLoadError, setConfigLoadError] = useState<string | null>(null);
+  const [configResetConfirmationOpen, setConfigResetConfirmationOpen] =
+    useState(false);
+  const [isResettingConfig, setIsResettingConfig] = useState(false);
+  const [configResetError, setConfigResetError] = useState<string | null>(null);
   const [transcript, setTranscript] = useState<string>("");
   const [isRecording, setIsRecording] = useState(false);
   const [isProcessing, setIsProcessing] = useState(false);
@@ -427,6 +435,52 @@ export default function App() {
   const pressedKeysRef = useRef(new Set<string>());
   const recordedHotkeyRef = useRef<string>("");
 
+  const loadApiKeyFromConfig = useCallback(async () => {
+    setConfigLoadPending(true);
+    const result = await loadSavedApiKey();
+    if (!result.ok) {
+      await logError(
+        "[config] API key load failed; showing configuration recovery screen",
+      ).catch(() => {});
+      setConfigLoadError(result.message);
+      setConfigLoadPending(false);
+      return;
+    }
+
+    setConfigLoadError(null);
+    if (result.apiKey) {
+      setApiKey(result.apiKey);
+      setIsApiKeyLocked(true);
+      setHasSavedApiKey(true);
+    } else {
+      setApiKey("");
+      setIsApiKeyLocked(false);
+      setHasSavedApiKey(false);
+    }
+    setConfigLoadPending(false);
+  }, []);
+
+  const handleResetCorruptedConfig = useCallback(async () => {
+    setIsResettingConfig(true);
+    setConfigResetError(null);
+    const result = await resetCorruptedConfig();
+    if (!result.ok) {
+      await logError("[config] user-confirmed settings reset failed").catch(
+        () => {},
+      );
+      setConfigResetError(result.message);
+      setIsResettingConfig(false);
+      return;
+    }
+
+    await logInfo(
+      "[config] user-confirmed settings reset completed; reloading defaults",
+    ).catch(() => {});
+    setConfigResetConfirmationOpen(false);
+    setIsResettingConfig(false);
+    await loadApiKeyFromConfig();
+  }, [loadApiKeyFromConfig]);
+
   useEffect(() => {
     const init = async () => {
       const p = await invoke<string>("get_platform").catch(() => "macos");
@@ -438,14 +492,7 @@ export default function App() {
       const v = await getVersion().catch(() => "");
       setAppVersion(v);
 
-      const savedKey = await invoke<string | null>("get_api_key").catch(
-        () => null,
-      );
-      if (savedKey) {
-        setApiKey(savedKey);
-        setIsApiKeyLocked(true);
-        setHasSavedApiKey(true);
-      }
+      await loadApiKeyFromConfig();
 
       const savedHotkey = await invoke<string | null>("get_hotkey").catch(
         () => null,
@@ -503,7 +550,7 @@ export default function App() {
       setSettingsReady(true);
     };
     init();
-  }, []);
+  }, [loadApiKeyFromConfig]);
 
   useEffect(() => {
     if (!bootstrap) {
@@ -1650,11 +1697,50 @@ export default function App() {
   const isGateScreen =
     activeScreen === "permissions" || activeScreen === "api-onboarding";
 
-  if (!bootstrap) {
+  if (configLoadPending || !bootstrap) {
     return (
       <main className="loading-shell">
         <div className="loading-spinner" />
         <span className="loading-text">Loading GladiaFlow</span>
+      </main>
+    );
+  }
+
+  if (configLoadError) {
+    return (
+      <main className="loading-shell config-error-shell">
+        <h2 className="setup-title">Unable to load settings</h2>
+        <p className="setup-desc">{configLoadError}</p>
+        <div className="setup-nav setup-nav-center">
+          <button className="btn btn-primary" onClick={loadApiKeyFromConfig}>
+            Retry
+          </button>
+          <button
+            className="btn btn-ghost"
+            onClick={() => invoke("open_log_folder").catch(console.error)}
+          >
+            Open logs folder
+          </button>
+          <button
+            className="btn btn-ghost config-reset-trigger"
+            onClick={() => {
+              setConfigResetError(null);
+              setConfigResetConfirmationOpen(true);
+            }}
+          >
+            Reset settings…
+          </button>
+        </div>
+        <ConfigResetDialog
+          open={configResetConfirmationOpen}
+          isResetting={isResettingConfig}
+          error={configResetError}
+          onCancel={() => {
+            setConfigResetConfirmationOpen(false);
+            setConfigResetError(null);
+          }}
+          onConfirm={handleResetCorruptedConfig}
+        />
       </main>
     );
   }
