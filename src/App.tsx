@@ -345,6 +345,8 @@ export default function App() {
     setIsProcessing(processing);
     if (!processing) {
       // Defer so any in-flight session teardown in the same turn can finish first.
+      // flushPendingStart also refuses to run while the Gladia session is still
+      // live or a stop is in flight — see its guards.
       queueMicrotask(() => flushPendingStartRef.current());
     }
   };
@@ -749,8 +751,10 @@ export default function App() {
             dictationStartTimeRef.current = null;
           }
           if (sessionInitialized.current) {
-            sessionInitialized.current = false;
+            // Keep sessionInitialized true until close finishes so a paste-complete
+            // flush cannot start a new dictation mid-teardown.
             await invoke("close_gladia_session").catch(console.error);
+            sessionInitialized.current = false;
           }
           // Session is fully torn down — safe to honor a rapid re-press queued
           // during finalize (paste-complete may have already cleared processing).
@@ -792,12 +796,14 @@ export default function App() {
           activeCaptureIdRef.current = null;
           audioReadyRef.current = false;
           setRecordingState(false);
-          setProcessingState(false);
+          // Tear down before clearing processing so a queued rapid re-press
+          // cannot start a new capture overlapping stop/close.
           await invoke("stop_audio_capture").catch(console.error);
           if (sessionInitialized.current) {
-            sessionInitialized.current = false;
             await invoke("close_gladia_session").catch(console.error);
+            sessionInitialized.current = false;
           }
+          setProcessingState(false);
           setStatus({
             phase: "error",
             title: "Transcription failed",
@@ -1281,8 +1287,8 @@ export default function App() {
       stopFallbackTimerRef.current = null;
       if (stopRequestedRef.current && sessionInitialized.current) {
         console.warn("Gladia session timed out — closing");
-        sessionInitialized.current = false;
         await invoke("close_gladia_session").catch(console.error);
+        sessionInitialized.current = false;
         stopRequestedRef.current = false;
         setProcessingState(false);
         setStatus({
@@ -1338,12 +1344,12 @@ export default function App() {
       earlyReleaseAtRef.current = null;
       dictationStartTimeRef.current = null;
       setRecordingState(false);
-      setProcessingState(false);
       await invoke("stop_audio_capture").catch(console.error);
       if (sessionInitialized.current) {
-        sessionInitialized.current = false;
         await invoke("close_gladia_session").catch(console.error);
+        sessionInitialized.current = false;
       }
+      setProcessingState(false);
       setStatus({
         phase: "error",
         title: "Microphone did not start",
@@ -1429,8 +1435,8 @@ export default function App() {
         completedDictationDurationRef.current = null;
         stopRequestedRef.current = false;
         audioCue.playErrorSound();
-        sessionInitialized.current = false;
         await invoke("close_gladia_session").catch(console.error);
+        sessionInitialized.current = false;
         setProcessingState(false);
         setStatus({
           phase: "error",
@@ -1461,8 +1467,8 @@ export default function App() {
         completedDictationDurationRef.current = null;
         stopRequestedRef.current = false;
         audioCue.playErrorSound();
-        sessionInitialized.current = false;
         await invoke("close_gladia_session").catch(console.error);
+        sessionInitialized.current = false;
         setProcessingState(false);
         setStatus({
           phase: "error",
@@ -1511,8 +1517,8 @@ export default function App() {
       stopRequestedRef.current = false;
       clearStopFallbackTimer();
       audioCue.playErrorSound();
-      sessionInitialized.current = false;
       await invoke("close_gladia_session").catch(console.error);
+      sessionInitialized.current = false;
       setProcessingState(false);
       setStatus({
         phase: "error",
@@ -1620,6 +1626,10 @@ export default function App() {
   flushPendingStartRef.current = () => {
     if (!pendingStartRef.current) return;
     if (isProcessingRef.current) return;
+    // Do not restart while the previous Gladia session is still open or a stop
+    // is still in flight (paste/finalize). Prevents overlapping start with
+    // teardown — especially transcription-error and paste-complete-during-close.
+    if (sessionInitialized.current || stopRequestedRef.current) return;
     if (isRecordingRef.current || isInitializingRef.current) return;
     if (!apiKeyRef.current.trim()) {
       pendingStartRef.current = false;
