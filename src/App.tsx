@@ -193,6 +193,8 @@ export default function App() {
   const sessionInitialized = useRef(false);
   const isInitializingRef = useRef(false);
   const pendingStopRef = useRef(false);
+  /** Hotkey pressed while finalizing — restart as soon as processing clears. */
+  const pendingStartRef = useRef(false);
   const isCapturingRef = useRef(false);
   const justCapturedRef = useRef(false);
   const languageSettingsLoaded = useRef(false);
@@ -336,9 +338,17 @@ export default function App() {
     setIsRecording(recording);
   };
 
+  const flushPendingStartRef = useRef<() => void>(() => {});
+
   const setProcessingState = (processing: boolean) => {
     isProcessingRef.current = processing;
     setIsProcessing(processing);
+    if (!processing) {
+      // Defer so any in-flight session teardown in the same turn can finish first.
+      // flushPendingStart also refuses to run while the Gladia session is still
+      // live or a stop is in flight — see its guards.
+      queueMicrotask(() => flushPendingStartRef.current());
+    }
   };
 
   const refreshTranscriptionHistory = useCallback(async () => {
@@ -741,9 +751,14 @@ export default function App() {
             dictationStartTimeRef.current = null;
           }
           if (sessionInitialized.current) {
-            sessionInitialized.current = false;
+            // Keep sessionInitialized true until close finishes so a paste-complete
+            // flush cannot start a new dictation mid-teardown.
             await invoke("close_gladia_session").catch(console.error);
+            sessionInitialized.current = false;
           }
+          // Session is fully torn down — safe to honor a rapid re-press queued
+          // during finalize (paste-complete may have already cleared processing).
+          queueMicrotask(() => flushPendingStartRef.current());
         },
       );
 
@@ -781,12 +796,14 @@ export default function App() {
           activeCaptureIdRef.current = null;
           audioReadyRef.current = false;
           setRecordingState(false);
-          setProcessingState(false);
+          // Tear down before clearing processing so a queued rapid re-press
+          // cannot start a new capture overlapping stop/close.
           await invoke("stop_audio_capture").catch(console.error);
           if (sessionInitialized.current) {
-            sessionInitialized.current = false;
             await invoke("close_gladia_session").catch(console.error);
+            sessionInitialized.current = false;
           }
+          setProcessingState(false);
           setStatus({
             phase: "error",
             title: "Transcription failed",
@@ -1270,8 +1287,8 @@ export default function App() {
       stopFallbackTimerRef.current = null;
       if (stopRequestedRef.current && sessionInitialized.current) {
         console.warn("Gladia session timed out — closing");
-        sessionInitialized.current = false;
         await invoke("close_gladia_session").catch(console.error);
+        sessionInitialized.current = false;
         stopRequestedRef.current = false;
         setProcessingState(false);
         setStatus({
@@ -1290,6 +1307,7 @@ export default function App() {
     if (!currentApiKey.trim()) return;
     if (isProcessingRef.current) return;
 
+    pendingStartRef.current = false;
     isInitializingRef.current = true;
     pendingStopRef.current = false;
     earlyAudioStopPromiseRef.current = null;
@@ -1326,12 +1344,12 @@ export default function App() {
       earlyReleaseAtRef.current = null;
       dictationStartTimeRef.current = null;
       setRecordingState(false);
-      setProcessingState(false);
       await invoke("stop_audio_capture").catch(console.error);
       if (sessionInitialized.current) {
-        sessionInitialized.current = false;
         await invoke("close_gladia_session").catch(console.error);
+        sessionInitialized.current = false;
       }
+      setProcessingState(false);
       setStatus({
         phase: "error",
         title: "Microphone did not start",
@@ -1417,8 +1435,8 @@ export default function App() {
         completedDictationDurationRef.current = null;
         stopRequestedRef.current = false;
         audioCue.playErrorSound();
-        sessionInitialized.current = false;
         await invoke("close_gladia_session").catch(console.error);
+        sessionInitialized.current = false;
         setProcessingState(false);
         setStatus({
           phase: "error",
@@ -1449,8 +1467,8 @@ export default function App() {
         completedDictationDurationRef.current = null;
         stopRequestedRef.current = false;
         audioCue.playErrorSound();
-        sessionInitialized.current = false;
         await invoke("close_gladia_session").catch(console.error);
+        sessionInitialized.current = false;
         setProcessingState(false);
         setStatus({
           phase: "error",
@@ -1499,8 +1517,8 @@ export default function App() {
       stopRequestedRef.current = false;
       clearStopFallbackTimer();
       audioCue.playErrorSound();
-      sessionInitialized.current = false;
       await invoke("close_gladia_session").catch(console.error);
+      sessionInitialized.current = false;
       setProcessingState(false);
       setStatus({
         phase: "error",
@@ -1514,7 +1532,6 @@ export default function App() {
   };
 
   const handleHotkeyPressed = async () => {
-    if (isProcessingRef.current) return;
     if (isCapturingRef.current) {
       exitCapture();
       setSettings((prev) => ({ ...prev, hotkey: "Fn" }));
@@ -1525,6 +1542,17 @@ export default function App() {
     }
     if (justCapturedRef.current) return;
     if (!apiKeyRef.current.trim()) return;
+
+    // Rapid re-press while the previous utterance is still finalizing: queue a
+    // restart for as soon as processing clears (instead of dropping the press).
+    if (isProcessingRef.current) {
+      pendingStartRef.current = true;
+      logInfo(
+        "[hotkey] pressed during finalize; queued dictation restart",
+      ).catch(() => {});
+      return;
+    }
+
     if (settingsRef.current.activationMode === "push-to-talk") {
       if (!isRecordingRef.current && !isInitializingRef.current) {
         await handleStartDictation();
@@ -1539,7 +1567,14 @@ export default function App() {
   };
 
   const handleHotkeyReleased = async () => {
-    if (isProcessingRef.current) return;
+    // If a restart was queued during finalize but the key is released before
+    // processing ends, cancel it (Hold mode only — Toggle ignores releases).
+    if (isProcessingRef.current) {
+      if (settingsRef.current.activationMode === "push-to-talk") {
+        pendingStartRef.current = false;
+      }
+      return;
+    }
     if (isCapturingRef.current) return;
     if (justCapturedRef.current) return;
     if (!apiKeyRef.current.trim()) return;
@@ -1588,6 +1623,28 @@ export default function App() {
     }
   };
 
+  flushPendingStartRef.current = () => {
+    if (!pendingStartRef.current) return;
+    if (isProcessingRef.current) return;
+    // Do not restart while the previous Gladia session is still open or a stop
+    // is still in flight (paste/finalize). Prevents overlapping start with
+    // teardown — especially transcription-error and paste-complete-during-close.
+    if (sessionInitialized.current || stopRequestedRef.current) return;
+    if (isRecordingRef.current || isInitializingRef.current) return;
+    if (!apiKeyRef.current.trim()) {
+      pendingStartRef.current = false;
+      return;
+    }
+    // Hold mode: only restart if the key is still conceptually "armed" via the
+    // pending flag (cleared on release while finalizing). Toggle keeps the flag
+    // until start.
+    pendingStartRef.current = false;
+    logInfo(
+      "[hotkey] starting dictation queued during finalize (rapid re-press)",
+    ).catch(() => {});
+    handleStartDictation().catch(console.error);
+  };
+
   const handleCancelRecording = async () => {
     if (isRecording) {
       clearAudioReadyTimer();
@@ -1595,6 +1652,7 @@ export default function App() {
       audioReadyRef.current = false;
       isInitializingRef.current = false;
       pendingStopRef.current = false;
+      pendingStartRef.current = false;
       earlyAudioStopPromiseRef.current = null;
       earlyReleaseAtRef.current = null;
       stopRequestedRef.current = false;
