@@ -124,11 +124,20 @@ export function HomeView({
 
       {permissions.hotkeyError && !isRecording && (
         <div className="permission-banner permission-banner--constrained">
-          <p className="text-danger">Hotkey monitor failed to start.</p>
+          <p className="text-danger">
+            {permissions.hotkeyError
+              .toLowerCase()
+              .includes("microphone")
+              ? "Microphone setup failed."
+              : "Hotkey monitor failed to start."}
+          </p>
+          <p className="text-secondary text-secondary--spaced">
+            {permissions.hotkeyError}
+          </p>
           <p className="text-secondary text-secondary--spaced">
             {isMac
               ? "Make sure Accessibility is enabled. Use Re-check after granting in Settings."
-              : "Try restarting the app. The hotkey shortcut may be in use by another application."}
+              : "On Windows in Parallels: Devices → Microphone → pick your Mac mic (not Disable). Then Re-check."}
           </p>
           <div className="permission-actions permission-actions--spaced">
             <button className="btn btn-ghost btn-sm" onClick={onRecheck}>

@@ -240,6 +240,66 @@ export function AppSettingsView({
 
       <div className="form-group">
         <label className="form-label">
+          Use on-screen context for vocabulary
+          <InfoTooltip label="About on-screen vocabulary">
+            <strong>On-screen context</strong>
+            When on, GladiaFlow samples window titles and Accessibility / UI
+            Automation text into a rolling vocabulary store. For Slack and
+            similar Electron apps (where accessibility text stays empty), it
+            also OCRs those windows — grant Screen Recording (macOS) when
+            prompted. Manual vocabulary always wins.
+          </InfoTooltip>
+        </label>
+        <label
+          className="toggle-switch"
+          title="Use on-screen context for vocabulary"
+        >
+          <input
+            type="checkbox"
+            checked={settings.useScreenContextVocabulary}
+            onChange={(e) =>
+              setSettings({
+                ...settings,
+                useScreenContextVocabulary: e.target.checked,
+              })
+            }
+          />
+          <span className="toggle-slider" />
+        </label>
+      </div>
+
+      <div className="form-group">
+        <label className="form-label">
+          Screen OCR for vocabulary
+          <InfoTooltip label="About screen OCR vocabulary">
+            <strong>Screen OCR</strong>
+            Optional full-display OCR fallback. When on (macOS), GladiaFlow OCRs your
+            displays if Accessibility text is thin. On Windows, chat windows
+            (Slack, …) are OCR'd automatically when screen-context is on.
+            Requires Screen Recording on macOS. Default off.
+          </InfoTooltip>
+        </label>
+        <label
+          className="toggle-switch"
+          title="Use screen OCR for vocabulary"
+        >
+          <input
+            type="checkbox"
+            checked={settings.useScreenContextOcr}
+            disabled={!settings.useScreenContextVocabulary}
+            onChange={(e) =>
+              setSettings({
+                ...settings,
+                useScreenContextOcr: e.target.checked,
+              })
+            }
+          />
+          <span className="toggle-slider" />
+        </label>
+      </div>
+
+      <div className="form-group">
+        <label className="form-label">
           Input audio device
           <InfoTooltip label="About input audio devices">
             Use built-in microphone for an optimal experience

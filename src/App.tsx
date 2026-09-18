@@ -53,14 +53,18 @@ import { AppSettingsView } from "./components/AppSettingsView";
 import { TranscriptionSettingsView } from "./components/TranscriptionSettingsView";
 import { PermissionsView } from "./components/PermissionsView";
 import { ApiKeyOnboardingView } from "./components/ApiKeyOnboardingView";
+import { ScreenContextOnboardingView } from "./components/ScreenContextOnboardingView";
 import { HomeView } from "./components/HomeView";
-import { CustomVocabularyView } from "./components/CustomVocabularyView";
 import { HistoryView } from "./components/HistoryView";
 import { HISTORY_PAGE_SIZE } from "./components/HistoryView";
 import { HoldModeWarningToast } from "./components/HoldModeWarningToast";
 import { ConfigResetDialog } from "./components/ConfigResetDialog";
 
-type Screen = NavScreen | "permissions" | "api-onboarding";
+type Screen =
+  | NavScreen
+  | "permissions"
+  | "api-onboarding"
+  | "screen-context-onboarding";
 
 let notificationPermissionRequest: Promise<boolean> | null = null;
 
@@ -112,6 +116,7 @@ function resolveScreen(
     microphone: string | null;
   },
   hasApiKey: boolean,
+  screenContextOnboardingDone: boolean | null,
 ): Screen {
   if (
     permissions.checked &&
@@ -120,6 +125,8 @@ function resolveScreen(
   )
     return "permissions";
   if (!hasApiKey) return "api-onboarding";
+  // null = still loading; don't flash this step early.
+  if (screenContextOnboardingDone === false) return "screen-context-onboarding";
   return navScreen;
 }
 
@@ -133,6 +140,10 @@ export default function App() {
   const [apiKey, setApiKey] = useState<string>("");
   const [isApiKeyLocked, setIsApiKeyLocked] = useState(false);
   const [hasSavedApiKey, setHasSavedApiKey] = useState(false);
+  const [screenContextOnboardingDone, setScreenContextOnboardingDone] =
+    useState<boolean | null>(null);
+  const [screenContextOnboardingChoice, setScreenContextOnboardingChoice] =
+    useState(true);
   const [isTestingApiKey, setIsTestingApiKey] = useState(false);
   const [configLoadPending, setConfigLoadPending] = useState(true);
   const [configLoadError, setConfigLoadError] = useState<string | null>(null);
@@ -153,6 +164,8 @@ export default function App() {
     hotkey: "Fn",
     codeSwitching: false,
     copyToClipboard: false,
+    useScreenContextVocabulary: false,
+    useScreenContextOcr: false,
     endpointing: 0.1,
     customVocabulary: DEFAULT_CUSTOM_VOCABULARY,
   });
@@ -201,6 +214,8 @@ export default function App() {
   const vocabularySettingsLoaded = useRef(false);
   const endpointingLoaded = useRef(false);
   const copyToClipboardLoaded = useRef(false);
+  const screenContextVocabularyLoaded = useRef(false);
+  const screenContextOcrLoaded = useRef(false);
   const activationModeLoaded = useRef(false);
   const audioDeviceSelectionLoaded = useRef(false);
 
@@ -300,6 +315,18 @@ export default function App() {
       enabled: settings.copyToClipboard,
     }).catch(console.error);
   }, [settings.copyToClipboard]);
+  useEffect(() => {
+    if (!screenContextVocabularyLoaded.current) return;
+    invoke("save_use_screen_context_vocabulary", {
+      enabled: settings.useScreenContextVocabulary,
+    }).catch(console.error);
+  }, [settings.useScreenContextVocabulary]);
+  useEffect(() => {
+    if (!screenContextOcrLoaded.current) return;
+    invoke("save_use_screen_context_ocr", {
+      enabled: settings.useScreenContextOcr,
+    }).catch(console.error);
+  }, [settings.useScreenContextOcr]);
   useEffect(() => {
     if (!activationModeLoaded.current) return;
     invoke("save_activation_mode", { mode: settings.activationMode }).catch(
@@ -439,7 +466,7 @@ export default function App() {
 
   const isMac = platform === "macos";
 
-  const DEFAULT_HOTKEY = "Fn";
+  const DEFAULT_HOTKEY = isMac ? "Fn" : "Ctrl";
 
   const [recordingKeys, setRecordingKeys] = useState<string[]>([]);
   const pressedKeysRef = useRef(new Set<string>());
@@ -466,6 +493,13 @@ export default function App() {
       setApiKey("");
       setIsApiKeyLocked(false);
       setHasSavedApiKey(false);
+    }
+    const onboardingDone = await invoke<boolean>(
+      "get_screen_context_onboarding_done",
+    ).catch(() => false);
+    setScreenContextOnboardingDone(onboardingDone);
+    if (!onboardingDone) {
+      setScreenContextOnboardingChoice(true);
     }
     setConfigLoadPending(false);
   }, []);
@@ -528,6 +562,14 @@ export default function App() {
         "get_copy_to_clipboard",
       ).catch(() => false);
 
+      const savedUseScreenContextVocabulary = await invoke<boolean>(
+        "get_use_screen_context_vocabulary",
+      ).catch(() => false);
+
+      const savedUseScreenContextOcr = await invoke<boolean>(
+        "get_use_screen_context_ocr",
+      ).catch(() => false);
+
       const savedActivationMode = await invoke<ActivationMode>(
         "get_activation_mode",
       ).catch(() => "push-to-talk" as ActivationMode);
@@ -547,6 +589,8 @@ export default function App() {
           : {}),
         endpointing: savedEndpointing,
         copyToClipboard: savedCopyToClipboard,
+        useScreenContextVocabulary: savedUseScreenContextVocabulary,
+        useScreenContextOcr: savedUseScreenContextOcr,
         activationMode: savedActivationMode,
         audioDeviceSelection: savedAudioDeviceSelection,
         customVocabulary: savedVocabulary,
@@ -555,6 +599,8 @@ export default function App() {
       vocabularySettingsLoaded.current = true;
       endpointingLoaded.current = true;
       copyToClipboardLoaded.current = true;
+      screenContextVocabularyLoaded.current = true;
+      screenContextOcrLoaded.current = true;
       activationModeLoaded.current = true;
       audioDeviceSelectionLoaded.current = true;
       setSettingsReady(true);
@@ -574,6 +620,8 @@ export default function App() {
           hotkey: settings.hotkey,
           codeSwitching: settings.codeSwitching,
           copyToClipboard: settings.copyToClipboard,
+          useScreenContextVocabulary: settings.useScreenContextVocabulary,
+          useScreenContextOcr: settings.useScreenContextOcr,
           endpointing: settings.endpointing,
           customVocabulary: settings.customVocabulary,
         },
@@ -888,11 +936,53 @@ export default function App() {
           await invoke("register_dictation_hotkey", { hotkey: "Ctrl" });
           setSettings((prev) => ({ ...prev, hotkey: "Ctrl" }));
           await invoke("save_hotkey", { hotkey: "Ctrl" }).catch(console.error);
-          return {
-            hotkeyError:
-              "Fn/Globe is not supported on Windows — switched to Ctrl+Space automatically.",
-            appliedHotkey: "Ctrl",
-          };
+          logHotkey(
+            "Fn/Globe is not supported on Windows — switched to Ctrl+Space",
+          );
+          return { hotkeyError: null, appliedHotkey: "Ctrl" };
+        } catch (e2) {
+          // Ctrl alone maps to Ctrl+Space, which often conflicts with IMEs.
+          try {
+            await invoke("register_dictation_hotkey", {
+              hotkey: "Ctrl+Shift+Space",
+            });
+            setSettings((prev) => ({
+              ...prev,
+              hotkey: "Ctrl+Shift+Space",
+            }));
+            await invoke("save_hotkey", { hotkey: "Ctrl+Shift+Space" }).catch(
+              console.error,
+            );
+            logHotkey(
+              "Ctrl+Space was unavailable — switched to Ctrl+Shift+Space",
+            );
+            return { hotkeyError: null, appliedHotkey: "Ctrl+Shift+Space" };
+          } catch (e3) {
+            return { hotkeyError: String(e3), appliedHotkey: hotkey };
+          }
+        }
+      }
+      if (
+        currentPlatform !== "macos" &&
+        (hotkey === "Ctrl" ||
+          hotkey === "CtrlLeft" ||
+          hotkey === "CtrlRight")
+      ) {
+        try {
+          await invoke("register_dictation_hotkey", {
+            hotkey: "Ctrl+Shift+Space",
+          });
+          setSettings((prev) => ({
+            ...prev,
+            hotkey: "Ctrl+Shift+Space",
+          }));
+          await invoke("save_hotkey", { hotkey: "Ctrl+Shift+Space" }).catch(
+            console.error,
+          );
+          logHotkey(
+            "Ctrl+Space was unavailable — switched to Ctrl+Shift+Space",
+          );
+          return { hotkeyError: null, appliedHotkey: "Ctrl+Shift+Space" };
         } catch (e2) {
           return { hotkeyError: String(e2), appliedHotkey: hotkey };
         }
@@ -1250,6 +1340,26 @@ export default function App() {
       });
     } finally {
       setIsTestingApiKey(false);
+    }
+  };
+
+  const handleScreenContextOnboardingContinue = async () => {
+    const enabled = screenContextOnboardingChoice;
+    try {
+      await invoke("complete_screen_context_onboarding", { enabled });
+      setSettings((prev) => ({
+        ...prev,
+        useScreenContextVocabulary: enabled,
+        ...(enabled ? {} : { useScreenContextOcr: false }),
+      }));
+      setScreenContextOnboardingDone(true);
+    } catch (e) {
+      console.error("Failed to save screen-context onboarding:", e);
+      setStatus({
+        phase: "error",
+        title: "Error",
+        detail: `Failed to save preference: ${e}`,
+      });
     }
   };
 
@@ -1751,9 +1861,16 @@ export default function App() {
         ? funnyHomeMessage
         : defaultIdlePrompt;
 
-  const activeScreen = resolveScreen(navScreen, permissions, hasSavedApiKey);
+  const activeScreen = resolveScreen(
+    navScreen,
+    permissions,
+    hasSavedApiKey,
+    screenContextOnboardingDone,
+  );
   const isGateScreen =
-    activeScreen === "permissions" || activeScreen === "api-onboarding";
+    activeScreen === "permissions" ||
+    activeScreen === "api-onboarding" ||
+    activeScreen === "screen-context-onboarding";
 
   if (configLoadPending || !bootstrap) {
     return (
@@ -1857,12 +1974,6 @@ export default function App() {
               onOpenLogs={() => invoke("open_log_folder").catch(console.error)}
             />
           )}
-          {activeScreen === "vocabulary" && (
-            <CustomVocabularyView
-              settings={settings}
-              setSettings={setSettings}
-            />
-          )}
           {activeScreen === "history" && (
             <HistoryView
               query={historyQuery}
@@ -1890,6 +2001,14 @@ export default function App() {
               isTesting={isTestingApiKey}
               onChangeKey={setApiKey}
               onSave={handleSaveApiKey}
+            />
+          )}
+          {activeScreen === "screen-context-onboarding" && (
+            <ScreenContextOnboardingView
+              enabled={screenContextOnboardingChoice}
+              onEnabledChange={setScreenContextOnboardingChoice}
+              onContinue={handleScreenContextOnboardingContinue}
+              isMac={isMac}
             />
           )}
           {activeScreen === "home" && (

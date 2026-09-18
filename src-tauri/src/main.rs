@@ -19,6 +19,7 @@ mod hotkey;
 mod hotkey_layout;
 mod permissions;
 mod region;
+mod screen_context;
 mod utterance_cleaner;
 mod vocabulary;
 
@@ -65,6 +66,8 @@ pub struct AppState {
     pub audio_sender: Arc<TokioMutex<Option<tokio::task::JoinHandle<()>>>>,
     pub tray_animation: Arc<TokioMutex<Option<tauri::async_runtime::JoinHandle<()>>>>,
     pub region: &'static str,
+    /// On-screen terms from the latest harvest — used to rewrite ASR output.
+    pub session_screen_terms: Arc<std::sync::Mutex<Vec<String>>>,
 }
 
 const TRAY_ID: &str = "main-tray";
@@ -222,6 +225,41 @@ async fn init_gladia_session(
         .filter(|entries| !entries.is_empty())
         .or_else(|| config::get_custom_vocabulary().ok())
         .unwrap_or_default();
+    let custom_vocabulary = if config::use_screen_context_vocabulary().unwrap_or(false) {
+        // Ensure sampler is running; then force a fresh chat OCR so names shown
+        // seconds ago (Slack search, etc.) are in the snapshot — the rolling
+        // store alone can miss them when OCR was throttled on another window.
+        screen_context::start_background_sampler();
+        let refresh = tokio::task::spawn_blocking(screen_context::refresh_chat_context_for_dictation);
+        match tokio::time::timeout(screen_context::DICTATION_REFRESH_TIMEOUT, refresh).await {
+            Ok(Ok(n)) if n > 0 => log::info!(
+                "[screen_context] pre-dictation chat OCR refresh upserted {n} term(s)"
+            ),
+            Ok(Ok(_)) => log::info!("[screen_context] pre-dictation chat OCR refresh: no new terms"),
+            Ok(Err(e)) => log::warn!("[screen_context] pre-dictation refresh join failed: {e}"),
+            Err(_) => log::warn!(
+                "[screen_context] pre-dictation chat OCR refresh timed out after {}ms",
+                screen_context::DICTATION_REFRESH_TIMEOUT.as_millis()
+            ),
+        }
+        let screen_terms = screen_context::snapshot_screen_vocabulary();
+        if !screen_terms.is_empty() {
+            log::info!(
+                "[screen_context] using {} on-screen vocabulary term(s) from rolling store",
+                screen_terms.len()
+            );
+        }
+        let session_terms: Vec<String> = screen_terms.iter().map(|e| e.value.clone()).collect();
+        if let Ok(mut slot) = state.session_screen_terms.lock() {
+            *slot = session_terms;
+        }
+        screen_context::merge_vocabulary_manual_priority(custom_vocabulary, screen_terms)
+    } else {
+        if let Ok(mut slot) = state.session_screen_terms.lock() {
+            slot.clear();
+        }
+        custom_vocabulary
+    };
     let endpointing = match endpointing {
         Some(endpointing) => endpointing,
         None => config::endpointing()?,
@@ -423,6 +461,11 @@ async fn subscribe_to_transcriptions(
     };
 
     let active = state.subscription_active.clone();
+    let screen_terms = state
+        .session_screen_terms
+        .lock()
+        .map(|g| g.clone())
+        .unwrap_or_default();
     spawn(async move {
         let mut cleaner = utterance_cleaner::UtteranceCleaner::new();
         // When enabled, the final transcription is left on the clipboard at
@@ -487,6 +530,15 @@ async fn subscribe_to_transcriptions(
                 }
                 gladia::TranscriptionEvent::Final { text, start, end } => {
                     final_count += 1;
+                    // Always run local rewrite: spoken "underscore" → `_`, and map
+                    // collapsed forms to harvested filenames when available.
+                    let rewritten = screen_context::rewrite_transcript(&text, &screen_terms);
+                    if rewritten != text {
+                        log::info!(
+                            "[screen_context] rewrote final utterance using on-screen terms"
+                        );
+                    }
+                    let text = rewritten;
                     let fragment = cleaner.process_final(&text, start, end);
                     log::info!(
                         "[transcription] final #{final_count} [{start:.2}s-{end:.2}s] ({} chars, transcript now {} chars)",
@@ -1165,7 +1217,22 @@ fn main() {
                 audio_sender: Arc::new(TokioMutex::new(None)),
                 tray_animation: Arc::new(TokioMutex::new(None)),
                 region: region::detect_region(),
+                session_screen_terms: Arc::new(std::sync::Mutex::new(Vec::new())),
             });
+
+            // Warm OpenPII NER off the UI thread (MLX sidecar preferred on macOS,
+            // ONNX/ort fallback) so the first dictation harvest stays fast.
+            if screen_context::resolve_mlx_model_dir().is_some()
+                || screen_context::resolve_model_dir().is_some()
+            {
+                std::thread::Builder::new()
+                    .name("openpii-ner-warmup".into())
+                    .spawn(|| screen_context::warmup())
+                    .ok();
+            }
+
+            // Rolling on-screen context: sample AX/titles into the vocabulary store.
+            screen_context::start_background_sampler_if_enabled();
 
             let current_version = env!("CARGO_PKG_VERSION");
             let installed = match config::get_installed_version() {
@@ -1318,6 +1385,12 @@ fn main() {
             config::get_endpointing,
             config::save_copy_to_clipboard,
             config::get_copy_to_clipboard,
+            config::save_use_screen_context_vocabulary,
+            config::get_use_screen_context_vocabulary,
+            config::save_use_screen_context_ocr,
+            config::get_use_screen_context_ocr,
+            config::get_screen_context_onboarding_done,
+            config::complete_screen_context_onboarding,
             config::save_activation_mode,
             config::get_activation_mode,
             config::save_audio_device_selection,
