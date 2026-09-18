@@ -11,12 +11,10 @@ pnpm-debug.log*
 dist/
 build/
 out/
-
 # Environment variables
 .env
 .env.*
 !.env.example
-
 # IDE and editor files
 .idea/
 .vscode/
@@ -30,7 +28,6 @@ out/
 .settings/
 *.sublime-*
 *.code-workspace*
-
 # Agents config
 .claude/*
 .poolside/*
@@ -44,10 +41,8 @@ out/
 skills-lock.json
 /AGENTS.md
 /CLAUDE.md
-
 # Licensed font binaries are provisioned locally or by CI and must not be committed.
 public/licensed-fonts/
-
 # OS files
 .DS_Store
 .DS_Store?
@@ -57,10 +52,8 @@ public/licensed-fonts/
 ehthumbs.db
 Thumbs.db
 desktop.ini
-
 # TypeScript
 *.tsbuildinfo
-
 # Tauri
 src-tauri/target/
 src-tauri/gen/
@@ -72,28 +65,24 @@ src-tauri/*.rpm
 src-tauri/*.msi
 *.msi
 *.exe
-
 # Rust (if you have Rust workspace files)
 **/*.rs.bk
 *.pdb
-
 # Logs
 logs/
 *.log
 lerna-debug.log*
-
 # Temporary files
 tmp/
 temp/
 *.tmp
 *.temp
-
 # Cache
 .cache/
 .parcel-cache/
 .vite/
-
 # Coverage
 coverage/
 *.lcov
 .nyc_output/
+.models/

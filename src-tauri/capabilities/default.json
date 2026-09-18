@@ -4,6 +4,12 @@
   "windows": ["main"],
   "permissions": [
     "core:default",
+    "core:event:allow-listen",
+    "core:event:allow-emit",
+    "core:window:allow-hide",
+    "core:window:allow-show",
+    "core:window:allow-set-always-on-top",
+    "core:window:allow-close",
     "log:default",
     "notification:default",
     "global-shortcut:allow-register",

@@ -135,6 +135,7 @@ The UI uses two windows: `main` for onboarding, history, and settings; and `over
 | Paste integration    | CoreGraphics <kbd>Cmd</kbd> + <kbd>V</kbd> | enigo <kbd>Ctrl</kbd> + <kbd>V</kbd> |
 | Clipboard            | `pbcopy` / `pbpaste`                       | `arboard`                            |
 | Required permissions | Microphone and Accessibility               | Microphone                           |
+| Screen-context vocab | AX + Vision OCR (Screen Recording)         | UI Automation + WinRT OCR            |
 | Release bundle       | Universal DMG                              | NSIS installer                       |
 
 Linux is not currently supported because the global hotkey, clipboard, and permission integrations are platform-specific.

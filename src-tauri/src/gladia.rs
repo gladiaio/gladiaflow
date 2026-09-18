@@ -302,6 +302,12 @@ impl GladiaClient {
                 unique_terms.len(),
                 languages
             );
+            let mut values: Vec<&str> = unique_terms.into_iter().collect();
+            values.sort_unstable();
+            log::info!(
+                "[gladiaflow] Live session vocabulary values: {}",
+                values.join(" | ")
+            );
         } else {
             log::info!("[gladiaflow] Live session request has no custom vocabulary");
         }

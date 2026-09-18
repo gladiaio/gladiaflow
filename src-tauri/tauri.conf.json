@@ -10,13 +10,16 @@
     "frontendDist": "../dist"
   },
   "app": {
+    "withGlobalTauri": true,
     "windows": [
       {
         "label": "main",
         "title": "GladiaFlow",
         "width": 800,
-        "height": 600,
-        "resizable": false,
+        "height": 640,
+        "minWidth": 720,
+        "minHeight": 560,
+        "resizable": true,
         "fullscreen": false,
         "visible": true
       }

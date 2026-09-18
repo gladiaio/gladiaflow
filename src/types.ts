@@ -43,6 +43,8 @@ export interface AppSettings {
   hotkey: string;
   codeSwitching: boolean;
   copyToClipboard: boolean;
+  useScreenContextVocabulary: boolean;
+  useScreenContextOcr: boolean;
   endpointing: number;
   customVocabulary: CustomVocabEntry[];
 }

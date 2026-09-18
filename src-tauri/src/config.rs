@@ -40,6 +40,14 @@ struct Config {
     /// "toggle" (press once to start, once to stop).
     activation_mode: Option<String>,
     custom_vocabulary: Option<Vec<CustomVocabEntry>>,
+    /// Opt-in: harvest frontmost-window terms via Accessibility and merge them
+    /// softly into the session custom vocabulary. Defaults to off.
+    use_screen_context_vocabulary: Option<bool>,
+    /// Opt-in Screen OCR fallback. Defaults to off. Requires
+    /// Screen Recording permission; used when Accessibility text is thin.
+    use_screen_context_ocr: Option<bool>,
+    /// Whether the user completed the screen-context onboarding step.
+    screen_context_onboarding_done: Option<bool>,
     /// Endpointing duration (seconds of silence before an utterance is
     /// considered final). Missing (older config files) defaults to 0.1 —
     /// see `endpointing`.
@@ -69,6 +77,9 @@ impl Default for Config {
             copy_to_clipboard: Some(false),
             activation_mode: Some(DEFAULT_ACTIVATION_MODE.to_string()),
             custom_vocabulary: Some(default_custom_vocabulary()),
+            use_screen_context_vocabulary: Some(false),
+            use_screen_context_ocr: Some(false),
+            screen_context_onboarding_done: Some(false),
             endpointing: Some(DEFAULT_ENDPOINTING),
             audio_device_selection: Some(AudioDeviceSelection::Automatic),
             accessibility_tcc_reset_done: Some(false),
@@ -100,6 +111,15 @@ impl Config {
         }
         if self.custom_vocabulary.is_none() {
             self.custom_vocabulary = defaults.custom_vocabulary;
+        }
+        if self.use_screen_context_vocabulary.is_none() {
+            self.use_screen_context_vocabulary = defaults.use_screen_context_vocabulary;
+        }
+        if self.use_screen_context_ocr.is_none() {
+            self.use_screen_context_ocr = defaults.use_screen_context_ocr;
+        }
+        if self.screen_context_onboarding_done.is_none() {
+            self.screen_context_onboarding_done = defaults.screen_context_onboarding_done;
         }
         if self.endpointing.is_none() {
             self.endpointing = defaults.endpointing;
@@ -231,6 +251,15 @@ pub fn endpointing() -> Result<f64, String> {
 /// `get_copy_to_clipboard` Tauri command wraps this for the frontend.
 pub fn copy_to_clipboard() -> Result<bool, String> {
     read_config(|config| config.copy_to_clipboard.unwrap_or(false))
+}
+
+/// Whether session init may harvest frontmost-window vocabulary. Defaults to off.
+pub fn use_screen_context_vocabulary() -> Result<bool, String> {
+    read_config(|config| config.use_screen_context_vocabulary.unwrap_or(false))
+}
+
+pub fn use_screen_context_ocr() -> Result<bool, String> {
+    read_config(|config| config.use_screen_context_ocr.unwrap_or(false))
 }
 
 pub fn audio_device_selection() -> Result<AudioDeviceSelection, String> {
@@ -494,6 +523,59 @@ pub async fn get_copy_to_clipboard() -> Result<bool, String> {
 }
 
 #[tauri::command]
+pub async fn save_use_screen_context_vocabulary(enabled: bool) -> Result<(), String> {
+    with_config(|config| {
+        config.use_screen_context_vocabulary = Some(enabled);
+    })?;
+    if enabled {
+        crate::screen_context::start_background_sampler();
+    }
+    Ok(())
+}
+
+#[tauri::command]
+pub async fn get_use_screen_context_vocabulary() -> Result<bool, String> {
+    use_screen_context_vocabulary()
+}
+
+#[tauri::command]
+pub async fn save_use_screen_context_ocr(enabled: bool) -> Result<(), String> {
+    with_config(|config| {
+        config.use_screen_context_ocr = Some(enabled);
+    })
+}
+
+#[tauri::command]
+pub async fn get_use_screen_context_ocr() -> Result<bool, String> {
+    use_screen_context_ocr()
+}
+
+pub fn screen_context_onboarding_done() -> Result<bool, String> {
+    read_config(|config| config.screen_context_onboarding_done.unwrap_or(false))
+}
+
+#[tauri::command]
+pub async fn get_screen_context_onboarding_done() -> Result<bool, String> {
+    screen_context_onboarding_done()
+}
+
+#[tauri::command]
+pub async fn complete_screen_context_onboarding(enabled: bool) -> Result<(), String> {
+    with_config(|config| {
+        config.use_screen_context_vocabulary = Some(enabled);
+        config.screen_context_onboarding_done = Some(true);
+        // Full-display OCR stays opt-in in App settings; chat OCR follows vocabulary.
+        if !enabled {
+            config.use_screen_context_ocr = Some(false);
+        }
+    })?;
+    if enabled {
+        crate::screen_context::start_background_sampler();
+    }
+    Ok(())
+}
+
+#[tauri::command]
 pub async fn save_activation_mode(mode: String) -> Result<(), String> {
     if mode != "toggle" && mode != DEFAULT_ACTIVATION_MODE {
         return Err(format!("Unknown activation mode: {mode}"));
@@ -575,6 +657,8 @@ mod tests {
         assert_eq!(config.code_switching, Some(false));
         assert_eq!(config.copy_to_clipboard, Some(false));
         assert_eq!(config.custom_vocabulary, Some(default_custom_vocabulary()));
+        assert_eq!(config.use_screen_context_vocabulary, Some(false));
+        assert_eq!(config.use_screen_context_ocr, Some(false));
         assert_eq!(config.endpointing, Some(DEFAULT_ENDPOINTING));
         assert_eq!(
             config.audio_device_selection,

@@ -1,21 +1,15 @@
 import { GladiaFlowLogo } from "./GladiaFlowLogo";
 import { GladiaIcon } from "./GladiaIcon";
 
-export type NavScreen =
-  | "home"
-  | "vocabulary"
-  | "dictation"
-  | "history"
-  | "settings";
+export type NavScreen = "home" | "dictation" | "history" | "settings";
 
 const NAV_ITEMS: Array<{
   id: NavScreen;
   label: string;
-  icon: "home" | "history" | "book" | "microphone" | "settings";
+  icon: "home" | "history" | "microphone" | "settings";
 }> = [
   { id: "home", label: "Home", icon: "home" },
   { id: "history", label: "History", icon: "history" },
-  { id: "vocabulary", label: "Vocabulary", icon: "book" },
   { id: "dictation", label: "Transcription settings", icon: "microphone" },
   { id: "settings", label: "App settings", icon: "settings" },
 ];

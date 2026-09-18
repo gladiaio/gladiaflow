@@ -4,7 +4,6 @@ import { PermissionsView } from "../components/PermissionsView";
 import { ApiKeyOnboardingView } from "../components/ApiKeyOnboardingView";
 import { HomeView } from "../components/HomeView";
 import { HistoryView } from "../components/HistoryView";
-import { CustomVocabularyView } from "../components/CustomVocabularyView";
 import { TranscriptionSettingsView } from "../components/TranscriptionSettingsView";
 import { AppSettingsView } from "../components/AppSettingsView";
 import { DEFAULT_CUSTOM_VOCABULARY } from "../lib/customVocabulary";
@@ -22,6 +21,8 @@ const MOCK_SETTINGS: AppSettings = {
   hotkey: "Fn",
   codeSwitching: false,
   copyToClipboard: false,
+    useScreenContextVocabulary: false,
+    useScreenContextOcr: false,
   endpointing: 0.1,
   customVocabulary: [
     ...DEFAULT_CUSTOM_VOCABULARY,
@@ -271,42 +272,6 @@ export function ScreenshotGallery() {
             onPageChange={noop}
             pageData={{ items: [], total: 0, page: 1, page_size: 4 }}
             isLoading={false}
-          />
-        </AppShell>
-      </ScreenFrame>
-
-      <ScreenFrame id="wrap-06-vocabulary" label="06 Vocabulary">
-        <AppShell id="06-vocabulary" activeScreen="vocabulary">
-          <CustomVocabularyView
-            settings={settings}
-            setSettings={
-              setSettings as React.Dispatch<React.SetStateAction<AppSettings>>
-            }
-          />
-        </AppShell>
-      </ScreenFrame>
-
-      <ScreenFrame
-        id="wrap-06b-vocabulary-editor"
-        label="06b Vocabulary Editor"
-      >
-        <AppShell id="06b-vocabulary-editor" activeScreen="vocabulary">
-          <CustomVocabularyView
-            settings={settings}
-            setSettings={
-              setSettings as React.Dispatch<React.SetStateAction<AppSettings>>
-            }
-          />
-        </AppShell>
-      </ScreenFrame>
-
-      <ScreenFrame id="wrap-06c-vocabulary-new" label="06c New Vocabulary Term">
-        <AppShell id="06c-vocabulary-new" activeScreen="vocabulary">
-          <CustomVocabularyView
-            settings={settings}
-            setSettings={
-              setSettings as React.Dispatch<React.SetStateAction<AppSettings>>
-            }
           />
         </AppShell>
       </ScreenFrame>
