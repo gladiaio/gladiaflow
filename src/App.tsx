@@ -48,6 +48,7 @@ import {
   updateHoldModeWarningStreak,
 } from "./lib/holdModeWarning";
 import { loadSavedApiKey, resetCorruptedConfig } from "./lib/configLoad";
+import { resolveHotkeyPress } from "./lib/dictationHotkey";
 import { SidebarNav, type NavScreen } from "./components/SidebarNav";
 import { AppSettingsView } from "./components/AppSettingsView";
 import { TranscriptionSettingsView } from "./components/TranscriptionSettingsView";
@@ -1285,10 +1286,17 @@ export default function App() {
     clearStopFallbackTimer();
     stopFallbackTimerRef.current = setTimeout(async () => {
       stopFallbackTimerRef.current = null;
-      if (stopRequestedRef.current && sessionInitialized.current) {
+      if (stopRequestedRef.current) {
+        // Always release the finalizing state, even when no Gladia session was
+        // ever opened — otherwise the app stays stuck on "Finalizing...".
         console.warn("Gladia session timed out — closing");
-        await invoke("close_gladia_session").catch(console.error);
-        sessionInitialized.current = false;
+        logWarn(
+          `[dictation-stop] session-ended not received after stop; forcing reset (session=${sessionInitialized.current ? "open" : "none"})`,
+        ).catch(() => {});
+        if (sessionInitialized.current) {
+          await invoke("close_gladia_session").catch(console.error);
+          sessionInitialized.current = false;
+        }
         stopRequestedRef.current = false;
         setProcessingState(false);
         setStatus({
@@ -1543,27 +1551,68 @@ export default function App() {
     if (justCapturedRef.current) return;
     if (!apiKeyRef.current.trim()) return;
 
-    // Rapid re-press while the previous utterance is still finalizing: queue a
-    // restart for as soon as processing clears (instead of dropping the press).
-    if (isProcessingRef.current) {
-      pendingStartRef.current = true;
-      logInfo(
-        "[hotkey] pressed during finalize; queued dictation restart",
-      ).catch(() => {});
-      return;
-    }
-
-    if (settingsRef.current.activationMode === "push-to-talk") {
-      if (!isRecordingRef.current && !isInitializingRef.current) {
-        await handleStartDictation();
-      }
-    } else {
-      if (isRecordingRef.current) {
+    const action = resolveHotkeyPress({
+      activationMode: settingsRef.current.activationMode,
+      isProcessing: isProcessingRef.current,
+      isInitializing: isInitializingRef.current,
+      isRecording: isRecordingRef.current,
+    });
+    switch (action) {
+      case "queue-restart":
+        pendingStartRef.current = true;
+        logInfo(
+          "[hotkey] pressed during finalize; queued dictation restart",
+        ).catch(() => {});
+        return;
+      case "stop-during-init":
+        requestStopDuringInitialization("toggle pressed");
+        return;
+      case "stop":
         await handleStopDictation();
-      } else {
+        return;
+      case "start":
         await handleStartDictation();
-      }
+        return;
+      case "ignore":
+        return;
     }
+  };
+
+  // Stop requested before the Gladia session exists: pause audio now and let
+  // handleStartDictation finish init, then send stop_recording (see its
+  // pendingStopRef branch) so session-ended still clears the finalizing state.
+  const requestStopDuringInitialization = (reason: string) => {
+    pendingStopRef.current = true;
+    const keyUpAt = performance.now();
+    earlyReleaseAtRef.current = keyUpAt;
+    const wasAudioReady = audioReadyRef.current;
+    clearAudioReadyTimer();
+    audioReadyRef.current = false;
+    stopRequestedRef.current = true;
+    clearStopFallbackTimer();
+    setRecordingState(false);
+    setProcessingState(true);
+    setStatus({
+      phase: "finalizing",
+      title: "Finalizing...",
+      detail: "Pasting your transcription",
+    });
+    if (wasAudioReady) {
+      audioCue.playStopSound();
+    }
+    logInfo(
+      `[dictation-stop] hotkey ${reason} during session initialization; stopping audio immediately`,
+    ).catch(() => {});
+    earlyAudioStopPromiseRef.current = invoke("stop_audio_capture")
+      .then(() => {
+        logInfo(
+          `audio latency: key-up-to-capture-paused=${(
+            performance.now() - keyUpAt
+          ).toFixed(1)}ms`,
+        ).catch(() => {});
+        return null;
+      })
+      .catch((error) => String(error));
   };
 
   const handleHotkeyReleased = async () => {
@@ -1586,37 +1635,7 @@ export default function App() {
         );
       }
       if (isInitializingRef.current) {
-        pendingStopRef.current = true;
-        const keyUpAt = performance.now();
-        earlyReleaseAtRef.current = keyUpAt;
-        const wasAudioReady = audioReadyRef.current;
-        clearAudioReadyTimer();
-        audioReadyRef.current = false;
-        stopRequestedRef.current = true;
-        clearStopFallbackTimer();
-        setRecordingState(false);
-        setProcessingState(true);
-        setStatus({
-          phase: "finalizing",
-          title: "Finalizing...",
-          detail: "Pasting your transcription",
-        });
-        if (wasAudioReady) {
-          audioCue.playStopSound();
-        }
-        logInfo(
-          "[dictation-stop] hotkey released during session initialization; stopping audio immediately",
-        ).catch(() => {});
-        earlyAudioStopPromiseRef.current = invoke("stop_audio_capture")
-          .then(() => {
-            logInfo(
-              `audio latency: key-up-to-capture-paused=${(
-                performance.now() - keyUpAt
-              ).toFixed(1)}ms`,
-            ).catch(() => {});
-            return null;
-          })
-          .catch((error) => String(error));
+        requestStopDuringInitialization("released");
       } else if (isRecordingRef.current) {
         await handleStopDictation();
       }
