@@ -32,7 +32,7 @@ npm run tauri:dev
    - Rust: `cargo test --manifest-path src-tauri/Cargo.toml`
    - Frontend / full suite: `npm test`
 4. Use [Conventional Commits](https://www.conventionalcommits.org/) for commit messages, for example `fix: restore clipboard after dictation`.
-5. Before opening a pull request, run:
+5. Before opening a pull request, run the commands below. `npm run format` formats TypeScript, CSS, JSON and Markdown with Prettier and Rust with `rustfmt`; CI runs `npm run format:check` and fails on unformatted files.
 
 ```bash
 npm run format
