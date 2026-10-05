@@ -356,9 +356,7 @@ fn delete_api_key_at(path: &Path) -> Result<(), String> {
 #[tauri::command]
 pub async fn reset_corrupted_config(confirmed: bool) -> Result<String, String> {
     let _guard = config_mutex().lock().unwrap();
-    let timestamp = chrono::Utc::now()
-        .format("%Y%m%dT%H%M%S%3fZ")
-        .to_string();
+    let timestamp = chrono::Utc::now().format("%Y%m%dT%H%M%S%3fZ").to_string();
     reset_corrupted_config_at(&get_config_path(), confirmed, &timestamp)
         .map(|path| path.to_string_lossy().into_owned())
 }
@@ -414,8 +412,9 @@ fn reset_corrupted_config_at(
             return Err(message);
         }
 
-        let message =
-            format!("Failed to create fresh settings; the original file was restored: {write_error}");
+        let message = format!(
+            "Failed to create fresh settings; the original file was restored: {write_error}"
+        );
         log::error!("[config] {message}");
         return Err(message);
     }
@@ -756,8 +755,7 @@ mod tests {
         let malformed = r#"{"api_key":"secret""#;
         fs::write(&path, malformed).unwrap();
 
-        let backup =
-            reset_corrupted_config_at(&path, true, "20260831T120000000Z").unwrap();
+        let backup = reset_corrupted_config_at(&path, true, "20260831T120000000Z").unwrap();
 
         assert_eq!(fs::read_to_string(&backup).unwrap(), malformed);
         let reset = load_config_from_path(&path).unwrap();
@@ -777,6 +775,9 @@ mod tests {
 
         assert!(result.is_err());
         assert_eq!(fs::read_to_string(&path).unwrap(), malformed);
-        assert!(!dir.0.join("config.broken-20260831T120000000Z.json").exists());
+        assert!(!dir
+            .0
+            .join("config.broken-20260831T120000000Z.json")
+            .exists());
     }
 }

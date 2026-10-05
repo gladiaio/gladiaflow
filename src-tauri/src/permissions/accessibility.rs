@@ -231,19 +231,13 @@ mod tests {
 
     #[test]
     fn classify_granted_working_when_trusted() {
-        assert_eq!(
-            classify(true, false),
-            AccessibilityState::GrantedWorking
-        );
+        assert_eq!(classify(true, false), AccessibilityState::GrantedWorking);
         assert_eq!(classify(true, true), AccessibilityState::GrantedWorking);
     }
 
     #[test]
     fn classify_not_determined_when_untrusted_and_never_prompted() {
-        assert_eq!(
-            classify(false, false),
-            AccessibilityState::NotDetermined
-        );
+        assert_eq!(classify(false, false), AccessibilityState::NotDetermined);
     }
 
     #[test]
