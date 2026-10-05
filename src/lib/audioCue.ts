@@ -3,9 +3,8 @@ class AudioCue {
 
   init() {
     try {
-      this.ctx = new (
-        window.AudioContext || (window as any).webkitAudioContext
-      )();
+      this.ctx = new (window.AudioContext ||
+        (window as any).webkitAudioContext)();
     } catch (e) {
       console.warn("Web Audio API not available");
     }

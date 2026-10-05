@@ -21,6 +21,7 @@
 GladiaFlow is an open-source desktop app that turns speech into text wherever you type. Hold a hotkey, speak, and the app streams your microphone to the [Gladia Live Transcription API](https://docs.gladia.io/), cleans the result, and pastes it into the focused application.
 
 > [!NOTE]
+>
 > GladiaFlow currently supports macOS and Windows. A [Gladia API key](https://app.gladia.io/) is required.
 
 ## Why GladiaFlow?
@@ -69,6 +70,7 @@ npm run tauri:dev
 The last command starts Vite, opens the Tauri application, and enables frontend and Rust hot reload. Enter your API key through the onboarding screen; no `.env` file is needed.
 
 > [!TIP]
+>
 > Run `npm run dev` when you only need the browser-based frontend. Native audio, global shortcuts, clipboard access, and Tauri commands require `npm run tauri:dev`.
 
 ### Useful commands
@@ -108,13 +110,13 @@ Focused app ← clipboard-safe paste ← transcript cleanup
 
 ## Architecture
 
-| Area            | Technology                 | Location                               |
-| --------------- | -------------------------- | -------------------------------------- |
-| Desktop shell   | Tauri 2                    | `src-tauri/`                           |
-| Native backend  | Rust, Tokio, CPAL          | `src-tauri/src/`                       |
-| Interface       | React 19, TypeScript, Vite | `src/`                                 |
-| Native bridge   | Tauri commands and events  | `src/App.tsx`, `src-tauri/src/main.rs` |
-| CI and releases | GitHub Actions             | `.github/workflows/`                   |
+| Area | Technology | Location |
+| --- | --- | --- |
+| Desktop shell | Tauri 2 | `src-tauri/` |
+| Native backend | Rust, Tokio, CPAL | `src-tauri/src/` |
+| Interface | React 19, TypeScript, Vite | `src/` |
+| Native bridge | Tauri commands and events | `src/App.tsx`, `src-tauri/src/main.rs` |
+| CI and releases | GitHub Actions | `.github/workflows/` |
 
 Important backend modules include:
 
@@ -129,13 +131,13 @@ The UI uses two windows: `main` for onboarding, history, and settings; and `over
 
 ## Platform support
 
-| Capability           | macOS                                      | Windows                              |
-| -------------------- | ------------------------------------------ | ------------------------------------ |
-| Default shortcut     | <kbd>Fn</kbd> / <kbd>Globe</kbd>           | <kbd>Ctrl</kbd> + <kbd>Space</kbd>   |
-| Paste integration    | CoreGraphics <kbd>Cmd</kbd> + <kbd>V</kbd> | enigo <kbd>Ctrl</kbd> + <kbd>V</kbd> |
-| Clipboard            | `pbcopy` / `pbpaste`                       | `arboard`                            |
-| Required permissions | Microphone and Accessibility               | Microphone                           |
-| Release bundle       | Universal DMG                              | NSIS installer                       |
+| Capability | macOS | Windows |
+| --- | --- | --- |
+| Default shortcut | <kbd>Fn</kbd> / <kbd>Globe</kbd> | <kbd>Ctrl</kbd> + <kbd>Space</kbd> |
+| Paste integration | CoreGraphics <kbd>Cmd</kbd> + <kbd>V</kbd> | enigo <kbd>Ctrl</kbd> + <kbd>V</kbd> |
+| Clipboard | `pbcopy` / `pbpaste` | `arboard` |
+| Required permissions | Microphone and Accessibility | Microphone |
+| Release bundle | Universal DMG | NSIS installer |
 
 Linux is not currently supported because the global hotkey, clipboard, and permission integrations are platform-specific.
 
