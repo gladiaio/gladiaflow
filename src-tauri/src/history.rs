@@ -105,7 +105,9 @@ pub fn list_entries(
     page_size: Option<u32>,
 ) -> Result<TranscriptionHistoryPage, String> {
     let page = page.unwrap_or(1).max(1);
-    let page_size = page_size.unwrap_or(DEFAULT_PAGE_SIZE).clamp(1, MAX_PAGE_SIZE);
+    let page_size = page_size
+        .unwrap_or(DEFAULT_PAGE_SIZE)
+        .clamp(1, MAX_PAGE_SIZE);
     let query = query.map(str::trim).filter(|q| !q.is_empty());
 
     with_connection(|conn| list_entries_conn(conn, query, page, page_size))
@@ -171,9 +173,7 @@ fn list_entries_conn(
 
 fn load_all_rows(conn: &Connection) -> Result<Vec<Row>, String> {
     let mut stmt = conn
-        .prepare(
-            "SELECT session_id, text, created_at FROM transcriptions ORDER BY created_at DESC",
-        )
+        .prepare("SELECT session_id, text, created_at FROM transcriptions ORDER BY created_at DESC")
         .map_err(|e| e.to_string())?;
     let rows = stmt
         .query_map([], |row| {

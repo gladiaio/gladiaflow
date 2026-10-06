@@ -1,0 +1,8 @@
+# Generated / lock files
+package-lock.json
+src-tauri/Cargo.lock
+src-tauri/gen/
+src-tauri/target/
+
+# Design source files
+design/

@@ -2,11 +2,7 @@ import { GladiaFlowLogo } from "./GladiaFlowLogo";
 import { GladiaIcon } from "./GladiaIcon";
 
 export type NavScreen =
-  | "home"
-  | "vocabulary"
-  | "dictation"
-  | "history"
-  | "settings";
+  "home" | "vocabulary" | "dictation" | "history" | "settings";
 
 const NAV_ITEMS: Array<{
   id: NavScreen;

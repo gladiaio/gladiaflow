@@ -1,5 +1,5 @@
-use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::Arc;
 use tauri::{AppHandle, Emitter};
 use tauri_plugin_global_shortcut::GlobalShortcutExt;
 
@@ -7,9 +7,9 @@ use crate::hotkey_layout;
 
 #[cfg(target_os = "macos")]
 mod macos_fn {
-    use std::sync::Arc;
-    use std::sync::atomic::{AtomicBool, Ordering};
     use std::ffi::c_void;
+    use std::sync::atomic::{AtomicBool, Ordering};
+    use std::sync::Arc;
     use std::time::Duration;
 
     const NS_FLAGS_CHANGED_MASK: u64 = 1 << 12; // NSEventMaskFlagsChanged
@@ -73,7 +73,8 @@ mod macos_fn {
                             "Both NSEvent and CGEventTap failed. \
                              CGEventTap error: {cg_err}. \
                              Accessibility permission is likely not granted."
-                        ))).ok();
+                        )))
+                        .ok();
                     }
                 }
             });
@@ -95,12 +96,11 @@ mod macos_fn {
             cb: Arc<dyn Fn(bool) + Send + Sync>,
             _running: Arc<AtomicBool>,
         ) -> Result<*mut c_void, String> {
-            use objc2::runtime::{AnyClass, AnyObject};
-            use objc2::msg_send;
             use block2::RcBlock;
+            use objc2::msg_send;
+            use objc2::runtime::{AnyClass, AnyObject};
 
-            let ns_event_cls = AnyClass::get("NSEvent")
-                .ok_or("NSEvent class not found")?;
+            let ns_event_cls = AnyClass::get("NSEvent").ok_or("NSEvent class not found")?;
 
             let was_pressed = Arc::new(AtomicBool::new(false));
             let was_pressed_clone = was_pressed.clone();
@@ -133,12 +133,13 @@ mod macos_fn {
         }
 
         fn remove_nsevent_monitor(monitor: *mut c_void) {
-            use objc2::runtime::AnyClass;
             use objc2::msg_send;
+            use objc2::runtime::AnyClass;
             if !monitor.is_null() {
                 let cls = AnyClass::get("NSEvent").unwrap();
                 unsafe {
-                    let _: () = msg_send![cls, removeMonitor: monitor as *mut objc2::runtime::AnyObject];
+                    let _: () =
+                        msg_send![cls, removeMonitor: monitor as *mut objc2::runtime::AnyObject];
                 }
             }
         }
@@ -148,11 +149,11 @@ mod macos_fn {
             cb: Arc<dyn Fn(bool) + Send + Sync>,
             running: Arc<AtomicBool>,
         ) -> Result<(), String> {
+            use core_foundation::runloop::{kCFRunLoopCommonModes, CFRunLoop};
             use core_graphics::event::{
-                CGEvent, CGEventTap, CGEventTapLocation,
-                CGEventTapPlacement, CGEventTapOptions, CGEventType,
+                CGEvent, CGEventTap, CGEventTapLocation, CGEventTapOptions, CGEventTapPlacement,
+                CGEventType,
             };
-            use core_foundation::runloop::{CFRunLoop, kCFRunLoopCommonModes};
 
             let was_pressed = Arc::new(AtomicBool::new(false));
 
@@ -172,10 +173,13 @@ mod macos_fn {
                     }
                     None
                 },
-            ).map_err(|()| "CGEventTap::new failed — Accessibility permission required")?;
+            )
+            .map_err(|()| "CGEventTap::new failed — Accessibility permission required")?;
 
             unsafe {
-                let source = tap.mach_port.create_runloop_source(0)
+                let source = tap
+                    .mach_port
+                    .create_runloop_source(0)
                     .expect("failed to create runloop source");
                 CFRunLoop::get_current().add_source(&source, kCFRunLoopCommonModes);
                 tap.enable();
@@ -264,9 +268,7 @@ impl HotkeyManager {
     #[cfg(target_os = "macos")]
     fn register_impl(&self, hotkey: &str, app_handle: AppHandle) -> Result<(), String> {
         if let Some(mask) = single_modifier_mask(hotkey) {
-            log::info!(
-                "[hotkey] using modifier tap for {hotkey:?} (mask=0x{mask:x})"
-            );
+            log::info!("[hotkey] using modifier tap for {hotkey:?} (mask=0x{mask:x})");
             self.register_modifier_tap(hotkey, mask, app_handle)
         } else {
             log::info!("[hotkey] using global-shortcut plugin for {hotkey:?}");
@@ -303,7 +305,12 @@ impl HotkeyManager {
     }
 
     #[cfg(target_os = "macos")]
-    fn register_modifier_tap(&self, hotkey: &str, mask: u64, app_handle: AppHandle) -> Result<(), String> {
+    fn register_modifier_tap(
+        &self,
+        hotkey: &str,
+        mask: u64,
+        app_handle: AppHandle,
+    ) -> Result<(), String> {
         let hotkey_label = hotkey.to_string();
         let handle = app_handle.clone();
         let tap = macos_fn::FnKeyTap::start(mask, move |pressed| {
@@ -344,9 +351,7 @@ impl HotkeyManager {
             Shortcut::new(Some(modifiers), Code::Space)
         };
 
-        log::info!(
-            "[hotkey] global-shortcut binding: config={key:?} physical={shortcut:?}"
-        );
+        log::info!("[hotkey] global-shortcut binding: config={key:?} physical={shortcut:?}");
 
         let configured = key.to_string();
         let handle = app_handle.clone();
@@ -450,14 +455,14 @@ pub fn validate_hotkey(hotkey: &str) -> Result<(), String> {
     }
 }
 
-fn parse_combo_shortcut(
-    combo: &str,
-) -> Result<tauri_plugin_global_shortcut::Shortcut, String> {
+fn parse_combo_shortcut(combo: &str) -> Result<tauri_plugin_global_shortcut::Shortcut, String> {
     use tauri_plugin_global_shortcut::{Modifiers, Shortcut};
 
     let parts: Vec<&str> = combo.split('+').collect();
     if parts.len() < 2 {
-        return Err(format!("Shortcut needs at least modifier+key, got: {combo}"));
+        return Err(format!(
+            "Shortcut needs at least modifier+key, got: {combo}"
+        ));
     }
 
     let mut mods = Modifiers::empty();
@@ -486,7 +491,9 @@ fn parse_combo_shortcut(
     );
 
     if mods.is_empty() {
-        return Err(format!("Shortcut must include at least one modifier: {combo}"));
+        return Err(format!(
+            "Shortcut must include at least one modifier: {combo}"
+        ));
     }
 
     Ok(Shortcut::new(Some(mods), code))

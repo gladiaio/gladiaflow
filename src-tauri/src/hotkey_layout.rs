@@ -6,9 +6,7 @@ use tauri_plugin_global_shortcut::Code;
 /// Map a persisted logical key token to a physical `Code` for global shortcut registration.
 pub fn resolve_logical_key(key: &str) -> Result<Code, String> {
     if let Some(code) = stable_logical_to_code(key) {
-        log::info!(
-            "[hotkey-layout] resolved stable logical key {key:?} -> physical {code:?}"
-        );
+        log::info!("[hotkey-layout] resolved stable logical key {key:?} -> physical {code:?}");
         return Ok(code);
     }
 
@@ -154,9 +152,8 @@ mod macos_layout {
         let source = CfOwned::new(unsafe { TISCopyCurrentKeyboardLayoutInputSource() })
             .ok_or_else(|| "Could not read the current keyboard layout.".to_string())?;
 
-        let layout_data = unsafe {
-            TISGetInputSourceProperty(source.as_ptr(), kTISPropertyUnicodeKeyLayoutData)
-        };
+        let layout_data =
+            unsafe { TISGetInputSourceProperty(source.as_ptr(), kTISPropertyUnicodeKeyLayoutData) };
         if layout_data.is_null() {
             return Err("Could not read keyboard layout data.".into());
         }
@@ -270,9 +267,8 @@ mod macos_layout {
 // would deadlock.
 #[cfg(test)]
 fn resolve_char_in_current_layout(ch: char) -> Result<Code, String> {
-    fallback_us_qwerty_char_to_code(ch).ok_or_else(|| {
-        format!("The key \"{ch}\" is not available on the current keyboard layout.")
-    })
+    fallback_us_qwerty_char_to_code(ch)
+        .ok_or_else(|| format!("The key \"{ch}\" is not available on the current keyboard layout."))
 }
 
 #[cfg(all(target_os = "macos", not(test)))]
@@ -305,20 +301,14 @@ fn resolve_char_in_current_layout(ch: char) -> Result<Code, String> {
     }
 
     let vk = (scan & 0xFF) as u16;
-    vk_to_code(vk).ok_or_else(|| {
-        format!(
-            "Could not map \"{ch}\" to a physical key on this keyboard layout."
-        )
-    })
+    vk_to_code(vk)
+        .ok_or_else(|| format!("Could not map \"{ch}\" to a physical key on this keyboard layout."))
 }
 
 #[cfg(all(not(any(target_os = "macos", target_os = "windows")), not(test)))]
 fn resolve_char_in_current_layout(ch: char) -> Result<Code, String> {
-  fallback_us_qwerty_char_to_code(ch).ok_or_else(|| {
-        format!(
-            "The key \"{ch}\" is not available on the current keyboard layout."
-        )
-    })
+    fallback_us_qwerty_char_to_code(ch)
+        .ok_or_else(|| format!("The key \"{ch}\" is not available on the current keyboard layout."))
 }
 
 #[cfg(any(target_os = "macos", target_os = "windows", test))]
@@ -555,9 +545,6 @@ mod tests {
     #[cfg(not(any(target_os = "macos", target_os = "windows")))]
     #[test]
     fn fallback_maps_us_letters() {
-        assert_eq!(
-            fallback_us_qwerty_char_to_code('A').unwrap(),
-            Code::KeyA
-        );
+        assert_eq!(fallback_us_qwerty_char_to_code('A').unwrap(), Code::KeyA);
     }
 }

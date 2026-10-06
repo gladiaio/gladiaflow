@@ -367,7 +367,10 @@ mod tests {
     fn test_process_final_returns_incremental_fragment() {
         let mut c = UtteranceCleaner::new();
         // First utterance: fragment is the body, no leading space.
-        assert_eq!(c.process_final("Hello world.", -1.0, -1.0).as_deref(), Some("Hello world"));
+        assert_eq!(
+            c.process_final("Hello world.", -1.0, -1.0).as_deref(),
+            Some("Hello world")
+        );
         // Continuation (lowercase next): period discarded, leading space + body.
         assert_eq!(
             c.process_final("and more", -1.0, -1.0).as_deref(),

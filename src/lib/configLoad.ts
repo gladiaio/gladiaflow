@@ -6,8 +6,7 @@ export const CONFIG_RESET_ERROR_MESSAGE =
   "GladiaFlow couldn't reset your settings. Your original settings file was not deleted.";
 
 export type ApiKeyLoadResult =
-  | { ok: true; apiKey: string | null }
-  | { ok: false; message: string };
+  { ok: true; apiKey: string | null } | { ok: false; message: string };
 
 export async function loadSavedApiKey(
   invokeApiKey: () => Promise<string | null> = () =>
@@ -21,8 +20,7 @@ export async function loadSavedApiKey(
 }
 
 export type ConfigResetResult =
-  | { ok: true; backupPath: string }
-  | { ok: false; message: string };
+  { ok: true; backupPath: string } | { ok: false; message: string };
 
 export async function resetCorruptedConfig(
   invokeReset: (confirmed: boolean) => Promise<string> = (confirmed) =>

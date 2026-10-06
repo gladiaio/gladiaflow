@@ -1,12 +1,12 @@
+use crate::vocabulary::{expand_vocabulary_for_languages, normalize_vocabulary, CustomVocabEntry};
+use base64::{engine::general_purpose::STANDARD, Engine as _};
+use futures_util::{SinkExt, StreamExt};
 use serde::{Deserialize, Serialize};
 use std::collections::VecDeque;
 use std::sync::Arc;
-use tokio::sync::{Mutex as TokioMutex, broadcast};
-use tokio_tungstenite::tungstenite::protocol::Message;
-use futures_util::{StreamExt, SinkExt};
+use tokio::sync::{broadcast, Mutex as TokioMutex};
 use tokio::task::JoinHandle;
-use base64::{Engine as _, engine::general_purpose::STANDARD};
-use crate::vocabulary::{CustomVocabEntry, expand_vocabulary_for_languages, normalize_vocabulary};
+use tokio_tungstenite::tungstenite::protocol::Message;
 
 const MAX_PENDING_AUDIO_BYTES: usize = 96_000; // ~3s at 16kHz/16-bit/mono
 
@@ -17,8 +17,8 @@ struct PendingAudioBuffer {
 }
 
 const EUROPEAN_LANGUAGE_CODES: &[&str] = &[
-    "en", "es", "fr", "de", "it", "pt", "nl", "pl", "cs", "da", "sv", "no", "fi", "ro", "hu",
-    "el", "tr", "uk", "ru",
+    "en", "es", "fr", "de", "it", "pt", "nl", "pl", "cs", "da", "sv", "no", "fi", "ro", "hu", "el",
+    "tr", "uk", "ru",
 ];
 
 fn resolve_session_languages(languages: Option<Vec<String>>) -> Vec<String> {
@@ -159,7 +159,11 @@ struct Utterance {
 #[derive(Debug, Clone, Serialize)]
 pub enum TranscriptionEvent {
     Partial(String),
-    Final { text: String, start: f64, end: f64 },
+    Final {
+        text: String,
+        start: f64,
+        end: f64,
+    },
     /// The session ended abnormally (network drop, protocol error). Carries a
     /// human-readable reason so the frontend can surface it. A normal,
     /// server-initiated close emits `SessionEnded` only — never `Error`.
@@ -225,7 +229,10 @@ impl GladiaClient {
             if session_unchanged {
                 let existing = self.session_id.lock().await;
                 if let Some(ref id) = *existing {
-                    let alive = self.task_handle.lock().await
+                    let alive = self
+                        .task_handle
+                        .lock()
+                        .await
                         .as_ref()
                         .map(|h| !h.is_finished())
                         .unwrap_or(false);
@@ -281,7 +288,11 @@ impl GladiaClient {
                 } else {
                     Some(LanguageConfig {
                         languages: config.languages.clone(),
-                        code_switching: if config.code_switching { Some(true) } else { None },
+                        code_switching: if config.code_switching {
+                            Some(true)
+                        } else {
+                            None
+                        },
                     })
                 },
                 realtime_processing,
@@ -310,7 +321,10 @@ impl GladiaClient {
         let response = client
             .post(format!("https://api.gladia.io/v2/live?region={region}"))
             .header("x-gladia-key", api_key)
-            .header("x-gladia-version", format!("Gladiaflow/{}", env!("CARGO_PKG_VERSION")))
+            .header(
+                "x-gladia-version",
+                format!("Gladiaflow/{}", env!("CARGO_PKG_VERSION")),
+            )
             .header("Content-Type", "application/json")
             .json(&request)
             .send()
@@ -342,12 +356,7 @@ impl GladiaClient {
         Ok(session_id)
     }
 
-    pub async fn set_audio_format(
-        &self,
-        sample_rate: u32,
-        channels: u32,
-        bit_depth: u32,
-    ) {
+    pub async fn set_audio_format(&self, sample_rate: u32, channels: u32, bit_depth: u32) {
         let mut config = self.config.lock().await;
         config.sample_rate = sample_rate;
         config.channels = channels;
@@ -455,7 +464,7 @@ impl GladiaClient {
                 let _ = tx.send(TranscriptionEvent::SessionEnded);
             }
         });
-        
+
         *self.task_handle.lock().await = Some(handle);
 
         Ok(())
@@ -466,7 +475,10 @@ impl GladiaClient {
         let response = client
             .get("https://api.gladia.io/v2/pre-recorded?limit=1")
             .header("x-gladia-key", api_key)
-            .header("x-gladia-version", format!("Gladiaflow/{}", env!("CARGO_PKG_VERSION")))
+            .header(
+                "x-gladia-version",
+                format!("Gladiaflow/{}", env!("CARGO_PKG_VERSION")),
+            )
             .send()
             .await?;
 

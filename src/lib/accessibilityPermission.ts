@@ -1,7 +1,5 @@
 export type AccessibilityState =
-  | "not_determined"
-  | "denied"
-  | "granted_working";
+  "not_determined" | "denied" | "granted_working";
 
 export function isAccessibilityGranted(
   state: AccessibilityState | null,

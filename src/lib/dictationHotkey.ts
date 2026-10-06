@@ -1,9 +1,5 @@
 export type HotkeyPressAction =
-  | "queue-restart"
-  | "stop-during-init"
-  | "stop"
-  | "start"
-  | "ignore";
+  "queue-restart" | "stop-during-init" | "stop" | "start" | "ignore";
 
 export function resolveHotkeyPress({
   activationMode,
