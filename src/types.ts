@@ -80,6 +80,10 @@ export interface TranscriptionHistoryEntry {
   id: string;
   text: string;
   created_at: string;
+  /** API base URL the session ran on; null for entries saved before it was recorded. */
+  api_base_url: string | null;
+  /** Gladia dashboard page of the session; null when its API host has none. */
+  open_url: string | null;
 }
 
 export interface TranscriptionHistoryPage {
