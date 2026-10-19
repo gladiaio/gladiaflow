@@ -12,6 +12,9 @@ pub struct TranscriptionHistoryEntry {
     pub id: String,
     pub text: String,
     pub created_at: String,
+    /// API base URL the session was created on; `None` for entries saved
+    /// before it was recorded (always the global API back then).
+    pub api_base_url: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -26,6 +29,7 @@ struct Row {
     session_id: String,
     text: String,
     created_at: String,
+    api_base_url: Option<String>,
 }
 
 const DEFAULT_PAGE_SIZE: u32 = 20;
@@ -76,27 +80,50 @@ fn init_schema(conn: &Connection) -> Result<(), String> {
             ON transcriptions(created_at DESC);
         "#,
     )
-    .map_err(|e| e.to_string())
+    .map_err(|e| e.to_string())?;
+
+    // Added after the first release: older databases lack the column.
+    let has_api_base_url = conn
+        .prepare("SELECT 1 FROM pragma_table_info('transcriptions') WHERE name = 'api_base_url'")
+        .and_then(|mut stmt| stmt.exists([]))
+        .map_err(|e| e.to_string())?;
+    if !has_api_base_url {
+        conn.execute(
+            "ALTER TABLE transcriptions ADD COLUMN api_base_url TEXT",
+            [],
+        )
+        .map_err(|e| e.to_string())?;
+    }
+    Ok(())
 }
 
-pub fn save_entry(session_id: &str, text: &str) -> Result<(), String> {
+pub fn save_entry(session_id: &str, api_base_url: &str, text: &str) -> Result<(), String> {
+    with_connection(|conn| save_entry_conn(conn, session_id, api_base_url, text))
+}
+
+fn save_entry_conn(
+    conn: &Connection,
+    session_id: &str,
+    api_base_url: &str,
+    text: &str,
+) -> Result<(), String> {
     let session_id = session_id.trim();
     let trimmed = text.trim();
     if session_id.is_empty() || trimmed.is_empty() {
         return Ok(());
     }
     let created_at = chrono::Utc::now().to_rfc3339();
-    with_connection(|conn| {
-        conn.execute(
-            "INSERT INTO transcriptions (session_id, text, created_at) VALUES (?1, ?2, ?3)
-             ON CONFLICT(session_id) DO UPDATE SET
-                text = excluded.text,
-                created_at = excluded.created_at",
-            params![session_id, trimmed, created_at],
-        )
-        .map_err(|e| e.to_string())?;
-        Ok(())
-    })
+    conn.execute(
+        "INSERT INTO transcriptions (session_id, text, created_at, api_base_url)
+         VALUES (?1, ?2, ?3, ?4)
+         ON CONFLICT(session_id) DO UPDATE SET
+            text = excluded.text,
+            created_at = excluded.created_at,
+            api_base_url = excluded.api_base_url",
+        params![session_id, trimmed, created_at, api_base_url],
+    )
+    .map_err(|e| e.to_string())?;
+    Ok(())
 }
 
 pub fn list_entries(
@@ -144,7 +171,7 @@ fn list_entries_conn(
     let offset = (page - 1) * page_size;
     let mut stmt = conn
         .prepare(
-            "SELECT session_id, text, created_at FROM transcriptions
+            "SELECT session_id, text, created_at, api_base_url FROM transcriptions
              ORDER BY created_at DESC LIMIT ?1 OFFSET ?2",
         )
         .map_err(|e| e.to_string())?;
@@ -154,6 +181,7 @@ fn list_entries_conn(
                 session_id: row.get(0)?,
                 text: row.get(1)?,
                 created_at: row.get(2)?,
+                api_base_url: row.get(3)?,
             })
         })
         .map_err(|e| e.to_string())?
@@ -173,7 +201,10 @@ fn list_entries_conn(
 
 fn load_all_rows(conn: &Connection) -> Result<Vec<Row>, String> {
     let mut stmt = conn
-        .prepare("SELECT session_id, text, created_at FROM transcriptions ORDER BY created_at DESC")
+        .prepare(
+            "SELECT session_id, text, created_at, api_base_url FROM transcriptions
+             ORDER BY created_at DESC",
+        )
         .map_err(|e| e.to_string())?;
     let rows = stmt
         .query_map([], |row| {
@@ -181,6 +212,7 @@ fn load_all_rows(conn: &Connection) -> Result<Vec<Row>, String> {
                 session_id: row.get(0)?,
                 text: row.get(1)?,
                 created_at: row.get(2)?,
+                api_base_url: row.get(3)?,
             })
         })
         .map_err(|e| e.to_string())?
@@ -215,12 +247,15 @@ fn row_to_entry(row: Row) -> TranscriptionHistoryEntry {
         id: row.session_id,
         text: row.text,
         created_at: row.created_at,
+        api_base_url: row.api_base_url,
     }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    const API: &str = "https://api.gladia.io";
 
     fn test_conn() -> Connection {
         let conn = Connection::open_in_memory().unwrap();
@@ -231,9 +266,9 @@ mod tests {
     #[test]
     fn save_and_list_newest_first() {
         let conn = test_conn();
-        save_entry_conn(&conn, "sess-1", "hello world").unwrap();
+        save_entry_conn(&conn, "sess-1", API, "hello world").unwrap();
         std::thread::sleep(std::time::Duration::from_millis(5));
-        save_entry_conn(&conn, "sess-2", "second entry").unwrap();
+        save_entry_conn(&conn, "sess-2", API, "second entry").unwrap();
 
         let page = list_entries_conn(&conn, None, 1, 20).unwrap();
         assert_eq!(page.total, 2);
@@ -248,6 +283,7 @@ mod tests {
             save_entry_conn(
                 &conn,
                 &format!("sess-{i}"),
+                API,
                 &format!("transcription number {i}"),
             )
             .unwrap();
@@ -265,8 +301,8 @@ mod tests {
     #[test]
     fn fuzzy_search_matches_with_typo() {
         let conn = test_conn();
-        save_entry_conn(&conn, "sess-a", "the quick brown fox").unwrap();
-        save_entry_conn(&conn, "sess-b", "something else entirely").unwrap();
+        save_entry_conn(&conn, "sess-a", API, "the quick brown fox").unwrap();
+        save_entry_conn(&conn, "sess-b", API, "something else entirely").unwrap();
 
         let page = list_entries_conn(&conn, Some("quik fox"), 1, 20).unwrap();
         assert_eq!(page.total, 1);
@@ -276,8 +312,8 @@ mod tests {
     #[test]
     fn duplicate_session_id_is_idempotent() {
         let conn = test_conn();
-        save_entry_conn(&conn, "sess-dup", "first version").unwrap();
-        save_entry_conn(&conn, "sess-dup", "updated version").unwrap();
+        save_entry_conn(&conn, "sess-dup", API, "first version").unwrap();
+        save_entry_conn(&conn, "sess-dup", API, "updated version").unwrap();
 
         let page = list_entries_conn(&conn, None, 1, 20).unwrap();
         assert_eq!(page.total, 1);
@@ -287,26 +323,30 @@ mod tests {
     #[test]
     fn skips_empty_text() {
         let conn = test_conn();
-        save_entry_conn(&conn, "sess-empty", "   ").unwrap();
+        save_entry_conn(&conn, "sess-empty", API, "   ").unwrap();
         let page = list_entries_conn(&conn, None, 1, 20).unwrap();
         assert_eq!(page.total, 0);
     }
 
-    fn save_entry_conn(conn: &Connection, session_id: &str, text: &str) -> Result<(), String> {
-        let session_id = session_id.trim();
-        let trimmed = text.trim();
-        if session_id.is_empty() || trimmed.is_empty() {
-            return Ok(());
-        }
-        let created_at = chrono::Utc::now().to_rfc3339();
-        conn.execute(
-            "INSERT INTO transcriptions (session_id, text, created_at) VALUES (?1, ?2, ?3)
-             ON CONFLICT(session_id) DO UPDATE SET
-                text = excluded.text,
-                created_at = excluded.created_at",
-            params![session_id, trimmed, created_at],
+    #[test]
+    fn migrates_databases_without_api_base_url() {
+        let conn = Connection::open_in_memory().unwrap();
+        conn.execute_batch(
+            "CREATE TABLE transcriptions (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                session_id TEXT NOT NULL UNIQUE,
+                text TEXT NOT NULL,
+                created_at TEXT NOT NULL
+            );
+            INSERT INTO transcriptions (session_id, text, created_at)
+                VALUES ('sess-old', 'before the upgrade', '2026-01-01T00:00:00Z');",
         )
-        .map_err(|e| e.to_string())?;
-        Ok(())
+        .unwrap();
+
+        init_schema(&conn).unwrap();
+        init_schema(&conn).unwrap();
+
+        let page = list_entries_conn(&conn, None, 1, 20).unwrap();
+        assert_eq!(page.items[0].api_base_url, None);
     }
 }

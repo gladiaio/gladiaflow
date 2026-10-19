@@ -442,9 +442,12 @@ async fn subscribe_to_transcriptions(
         gladia.subscribe_to_transcriptions().await
     };
 
-    let session_id = {
+    let (session_id, api_base_url) = {
         let gladia = state.gladia.lock().await;
-        gladia.current_session_id().await
+        (
+            gladia.current_session_id().await,
+            gladia.current_api_base_url().await,
+        )
     };
 
     let active = state.subscription_active.clone();
@@ -593,9 +596,10 @@ async fn subscribe_to_transcriptions(
                     if let Some(ref sid) = session_id {
                         if !full_text.trim().is_empty() {
                             let sid = sid.clone();
+                            let api_base_url = api_base_url.clone();
                             let text = full_text.clone();
                             match tokio::task::spawn_blocking(move || {
-                                history::save_entry(&sid, &text)
+                                history::save_entry(&sid, &api_base_url, &text)
                             })
                             .await
                             {

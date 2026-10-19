@@ -885,6 +885,11 @@ impl GladiaClient {
         self.session_id.lock().await.clone()
     }
 
+    /// API base URL the current session was created on.
+    pub async fn current_api_base_url(&self) -> String {
+        self.config.lock().await.endpoint.base_url.clone()
+    }
+
     pub async fn send_audio(&self, audio_data: &[u8]) -> Result<(), GladiaError> {
         if audio_data.is_empty() {
             return Ok(());
