@@ -324,6 +324,7 @@ mod external_url_tests {
             "https://app.gladia.io/apikeys",
             "https://docs.gladia.io/chapters/audio-intelligence/custom-vocabulary",
             "https://app.gladia.io/transcriptions/live/session-id?source=gladiaflow",
+            "https://eu1.app.gladia.io/transcriptions/session-id",
             "https://nested.internal.gladia.io/path",
         ] {
             assert!(validate_external_url(url).is_ok(), "should allow {url}");

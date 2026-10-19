@@ -15,6 +15,8 @@ pub struct TranscriptionHistoryEntry {
     /// API base URL the session was created on; `None` for entries saved
     /// before it was recorded (always the global API back then).
     pub api_base_url: Option<String>,
+    /// Gladia dashboard page of the session, when its host has one.
+    pub open_url: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -124,6 +126,36 @@ fn save_entry_conn(
     )
     .map_err(|e| e.to_string())?;
     Ok(())
+}
+
+/// Gladia dashboard page of a live session, from the API base URL it was
+/// created on:
+/// - global API (`api.gladia.io`, or unknown for old entries) → app.gladia.io;
+/// - Enterprise host (`<instance>.api.gladia.io`, where the instance is a
+///   region, a client name…) → `<instance>.app.gladia.io`;
+/// - any other host (local or self-hosted API) has no dashboard → `None`.
+pub fn dashboard_url(api_base_url: Option<&str>, session_id: &str) -> Option<String> {
+    let Some(api_base_url) = api_base_url else {
+        return Some(global_dashboard_url(session_id));
+    };
+    let url = url::Url::parse(api_base_url).ok()?;
+    if url.scheme() != "https" || url.port().is_some() {
+        return None;
+    }
+    let host = url.host_str()?;
+    if host == "api.gladia.io" {
+        return Some(global_dashboard_url(session_id));
+    }
+    let instance = host.strip_suffix(".api.gladia.io")?;
+    let is_single_label = !instance.is_empty()
+        && instance
+            .chars()
+            .all(|c| c.is_ascii_alphanumeric() || c == '-');
+    is_single_label.then(|| format!("https://{instance}.app.gladia.io/transcriptions/{session_id}"))
+}
+
+fn global_dashboard_url(session_id: &str) -> String {
+    format!("https://app.gladia.io/transcriptions/live/{session_id}")
 }
 
 pub fn list_entries(
@@ -243,11 +275,13 @@ fn fuzzy_filter(mut rows: Vec<Row>, query: &str) -> Vec<Row> {
 }
 
 fn row_to_entry(row: Row) -> TranscriptionHistoryEntry {
+    let open_url = dashboard_url(row.api_base_url.as_deref(), &row.session_id);
     TranscriptionHistoryEntry {
         id: row.session_id,
         text: row.text,
         created_at: row.created_at,
         api_base_url: row.api_base_url,
+        open_url,
     }
 }
 
@@ -329,6 +363,72 @@ mod tests {
     }
 
     #[test]
+    fn entries_carry_their_dashboard_url() {
+        let conn = test_conn();
+        save_entry_conn(&conn, "sess-global", API, "global").unwrap();
+        save_entry_conn(&conn, "sess-eu1", "https://eu1.api.gladia.io", "enterprise").unwrap();
+        save_entry_conn(&conn, "sess-local", "http://localhost:8080", "local").unwrap();
+
+        let page = list_entries_conn(&conn, None, 1, 20).unwrap();
+        let open_url = |id: &str| {
+            page.items
+                .iter()
+                .find(|entry| entry.id == id)
+                .unwrap()
+                .open_url
+                .clone()
+        };
+        assert_eq!(
+            open_url("sess-global").as_deref(),
+            Some("https://app.gladia.io/transcriptions/live/sess-global")
+        );
+        assert_eq!(
+            open_url("sess-eu1").as_deref(),
+            Some("https://eu1.app.gladia.io/transcriptions/sess-eu1")
+        );
+        assert_eq!(open_url("sess-local"), None);
+    }
+
+    #[test]
+    fn dashboard_url_by_api_host() {
+        let id = "01a1546a-63b7-7ae6-a4cd-fff729dcf4fe";
+        for (api_base_url, expected) in [
+            (
+                None,
+                Some(format!("https://app.gladia.io/transcriptions/live/{id}")),
+            ),
+            (
+                Some("https://api.gladia.io"),
+                Some(format!("https://app.gladia.io/transcriptions/live/{id}")),
+            ),
+            (
+                Some("https://eu1.api.gladia.io"),
+                Some(format!("https://eu1.app.gladia.io/transcriptions/{id}")),
+            ),
+            (
+                Some("https://acme-corp.api.gladia.io/"),
+                Some(format!(
+                    "https://acme-corp.app.gladia.io/transcriptions/{id}"
+                )),
+            ),
+            (Some("http://localhost:8080"), None),
+            (Some("http://eu1.api.gladia.io"), None),
+            (Some("https://eu1.api.gladia.io:8443"), None),
+            (Some("https://api.staging.gladia.io"), None),
+            (Some("https://a.b.api.gladia.io"), None),
+            (Some("https://api.gladia.io.evil.example"), None),
+            (Some("https://my-proxy.example.com"), None),
+            (Some("not a url"), None),
+        ] {
+            assert_eq!(
+                dashboard_url(api_base_url, id),
+                expected,
+                "api_base_url={api_base_url:?}"
+            );
+        }
+    }
+
+    #[test]
     fn migrates_databases_without_api_base_url() {
         let conn = Connection::open_in_memory().unwrap();
         conn.execute_batch(
@@ -348,5 +448,9 @@ mod tests {
 
         let page = list_entries_conn(&conn, None, 1, 20).unwrap();
         assert_eq!(page.items[0].api_base_url, None);
+        assert_eq!(
+            page.items[0].open_url.as_deref(),
+            Some("https://app.gladia.io/transcriptions/live/sess-old")
+        );
     }
 }
