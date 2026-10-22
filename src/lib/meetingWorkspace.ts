@@ -248,21 +248,39 @@ export function mergeMeetingUtterance(
   current: MeetingUtterance[],
   incoming: MeetingUtterance,
 ): MeetingUtterance[] {
+  const belongsToIncoming = (utterance: MeetingUtterance) => {
+    if (utterance.channel !== incoming.channel) return false;
+    if (utterance.id && incoming.id && utterance.id === incoming.id) return true;
+
+    const start = utterance.start;
+    const end = utterance.end;
+    const incomingStart = incoming.start;
+    const incomingEnd = incoming.end;
+    if (
+      start === undefined ||
+      end === undefined ||
+      incomingStart === undefined ||
+      incomingEnd === undefined ||
+      start < 0 ||
+      end < 0 ||
+      incomingStart < 0 ||
+      incomingEnd < 0
+    ) {
+      return !utterance.id || !incoming.id;
+    }
+    return Math.max(start, incomingStart) <= Math.min(end, incomingEnd);
+  };
+
   const withoutOpenPartial = current.filter(
     (utterance) =>
-      utterance.channel !== incoming.channel || utterance.isFinal !== false,
+      utterance.isFinal !== false || !belongsToIncoming(utterance),
   );
   const withoutDuplicateFinal =
     incoming.isFinal === false
       ? withoutOpenPartial
       : withoutOpenPartial.filter(
           (utterance) =>
-            utterance.isFinal === false ||
-            utterance.channel !== incoming.channel ||
-            (incoming.id
-              ? utterance.id !== incoming.id
-              : utterance.start !== incoming.start ||
-                utterance.end !== incoming.end),
+            utterance.isFinal === false || !belongsToIncoming(utterance),
         );
 
   return [...withoutDuplicateFinal, incoming].sort((left, right) => {

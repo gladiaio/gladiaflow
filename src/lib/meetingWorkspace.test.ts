@@ -97,7 +97,7 @@ describe("currentCalendarMeeting", () => {
 });
 
 describe("mergeMeetingUtterance", () => {
-  it("keeps one live partial per channel even when Gladia changes its id", () => {
+  it("replaces an overlapping live partial when Gladia changes its id", () => {
     const current = [
       {
         id: "old",
@@ -120,6 +120,36 @@ describe("mergeMeetingUtterance", () => {
         end: 3,
       }),
     ).toEqual([expect.objectContaining({ id: "new", text: "new partial" })]);
+  });
+
+  it("keeps non-overlapping partials visible while their finals are delayed", () => {
+    const merged = mergeMeetingUtterance(
+      [
+        {
+          id: "earlier",
+          text: "Earlier provisional sentence",
+          channel: 1,
+          owner: false,
+          isFinal: false,
+          start: 1,
+          end: 3,
+        },
+      ],
+      {
+        id: "current",
+        text: "Current provisional sentence",
+        channel: 1,
+        owner: false,
+        isFinal: false,
+        start: 4,
+        end: 6,
+      },
+    );
+
+    expect(merged.map(({ text }) => text)).toEqual([
+      "Earlier provisional sentence",
+      "Current provisional sentence",
+    ]);
   });
 
   it("removes the open partial when its channel receives a final", () => {
@@ -158,6 +188,39 @@ describe("mergeMeetingUtterance", () => {
     expect(merged).toEqual([
       expect.objectContaining({ text: "confirmed", isFinal: true }),
       expect.objectContaining({ text: "owner speaking", isFinal: false }),
+    ]);
+  });
+
+  it("replaces an overlapping final when Gladia sends a diarized revision", () => {
+    const merged = mergeMeetingUtterance(
+      [
+        {
+          id: "initial-final",
+          text: "Initial transcript",
+          channel: 1,
+          owner: false,
+          isFinal: true,
+          start: 10,
+          end: 14,
+        },
+      ],
+      {
+        id: "diarized-revision",
+        text: "Revised transcript",
+        channel: 1,
+        owner: false,
+        speaker: 1,
+        isFinal: true,
+        start: 12,
+        end: 16,
+      },
+    );
+
+    expect(merged).toEqual([
+      expect.objectContaining({
+        id: "diarized-revision",
+        text: "Revised transcript",
+      }),
     ]);
   });
 });
