@@ -1,7 +1,7 @@
 import { renderToStaticMarkup } from "react-dom/server";
 import type { ComponentProps } from "react";
 import { describe, expect, it, vi } from "vitest";
-import { MeetingView } from "./MeetingView";
+import { groupMeetingUtterances, MeetingView } from "./MeetingView";
 
 const render = (overrides: Partial<ComponentProps<typeof MeetingView>> = {}) =>
   renderToStaticMarkup(
@@ -51,7 +51,10 @@ describe("MeetingView", () => {
       },
     });
     expect(html).toContain("Screen Recording permission is required");
-    expect(html).toMatch(/<button[^>]*disabled=""[^>]*>Start meeting/);
+    expect(html).toMatch(
+      /<button[^>]*meeting-start-button[^>]*disabled=""[^>]*>/,
+    );
+    expect(html).toContain("Start meeting");
     expect(html).toContain("Open System Settings");
   });
 
@@ -68,5 +71,26 @@ describe("MeetingView", () => {
 
   it("shows stop while recording", () => {
     expect(render({ phase: "recording" })).toContain("Stop meeting");
+  });
+
+  it("groups consecutive phrases from the same speaker into one turn", () => {
+    const turns = groupMeetingUtterances([
+      { id: "1", text: "One", channel: 1, owner: false, speaker: 0 },
+      { id: "2", text: "Two", channel: 1, owner: false, speaker: 0 },
+      { id: "3", text: "Three", channel: 0, owner: true },
+    ]);
+
+    expect(turns).toHaveLength(2);
+    expect(turns[0].label).toBe("Speaker 1");
+    expect(turns[0].utterances.map(({ text }) => text)).toEqual(["One", "Two"]);
+    expect(turns[1].label).toBe("You");
+  });
+
+  it("keeps the completed transcript and offers a new meeting", () => {
+    const html = render({
+      utterances: [{ text: "Done", channel: 0, owner: true, isFinal: true }],
+    });
+    expect(html).toContain("Meeting transcript");
+    expect(html).toContain("New meeting");
   });
 });

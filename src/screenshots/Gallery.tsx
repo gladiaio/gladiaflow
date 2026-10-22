@@ -7,6 +7,7 @@ import { HistoryView } from "../components/HistoryView";
 import { CustomVocabularyView } from "../components/CustomVocabularyView";
 import { TranscriptionSettingsView } from "../components/TranscriptionSettingsView";
 import { AppSettingsView } from "../components/AppSettingsView";
+import { MeetingView } from "../components/MeetingView";
 import { DEFAULT_CUSTOM_VOCABULARY } from "../lib/customVocabulary";
 import { DEFAULT_DICTATION_STATS } from "../lib/dictationStats";
 import { EUROPEAN_LANGUAGES } from "../lib/languages";
@@ -276,6 +277,70 @@ export function ScreenshotGallery() {
             onPageChange={noop}
             pageData={MOCK_HISTORY}
             isLoading={false}
+          />
+        </AppShell>
+      </ScreenFrame>
+
+      <ScreenFrame id="wrap-05d-meeting-idle" label="05d Meeting Idle">
+        <AppShell id="05d-meeting-idle" activeScreen="meeting">
+          <MeetingView
+            phase="idle"
+            systemAudioCapability={{
+              backend: "core_audio_process_tap",
+              permission: "authorized",
+              requiresRestart: false,
+            }}
+            utterances={[]}
+            error={null}
+            onStart={noop}
+            onStop={noop}
+            onGrantPermission={noop}
+            onOpenSettings={noop}
+            onRecheckPermission={noop}
+          />
+        </AppShell>
+      </ScreenFrame>
+
+      <ScreenFrame id="wrap-05e-meeting-live" label="05e Meeting Live">
+        <AppShell id="05e-meeting-live" activeScreen="meeting">
+          <MeetingView
+            phase="recording"
+            systemAudioCapability={{
+              backend: "core_audio_process_tap",
+              permission: "authorized",
+              requiresRestart: false,
+            }}
+            utterances={[
+              {
+                id: "meeting-1",
+                text: "Let’s review the launch plan for next week.",
+                channel: 0,
+                owner: true,
+                isFinal: true,
+              },
+              {
+                id: "meeting-2",
+                text: "The rollout is ready. We only need final approval.",
+                channel: 1,
+                owner: false,
+                speaker: 0,
+                isFinal: true,
+              },
+              {
+                id: "meeting-3",
+                text: "I’ll send the updated checklist after this call.",
+                channel: 1,
+                owner: false,
+                speaker: 1,
+                isFinal: false,
+              },
+            ]}
+            error={null}
+            onStart={noop}
+            onStop={noop}
+            onGrantPermission={noop}
+            onOpenSettings={noop}
+            onRecheckPermission={noop}
           />
         </AppShell>
       </ScreenFrame>
