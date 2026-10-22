@@ -11,7 +11,12 @@ import type {
   AudioDeviceInfo,
   AudioDeviceSelection,
   ActivationMode,
+  MeetingPhase,
+  MeetingRecord,
+  MeetingUpdate,
   MeetingUtterance,
+  CalendarMeeting,
+  CalendarSnapshot,
   SystemAudioCapability,
 } from "./types";
 import { invoke } from "@tauri-apps/api/core";
@@ -67,6 +72,14 @@ import { HISTORY_PAGE_SIZE } from "./components/HistoryView";
 import { HoldModeWarningToast } from "./components/HoldModeWarningToast";
 import { ConfigResetDialog } from "./components/ConfigResetDialog";
 import { MeetingView } from "./components/MeetingView";
+import { MeetingCalendarPrompt } from "./components/MeetingCalendarPrompt";
+import {
+  currentCalendarMeeting,
+  loadMeetingPreferences,
+  MEETING_PREFERENCES_STORAGE_KEY,
+  remainingMeetingDurationMs,
+  type MeetingPreferences,
+} from "./lib/meetingWorkspace";
 
 type Screen = NavScreen | "permissions" | "api-onboarding";
 
@@ -209,13 +222,27 @@ export default function App() {
     checked: false,
   });
   const [isCapturing, setIsCapturing] = useState(false);
-  const [meetingPhase, setMeetingPhase] = useState<
-    "idle" | "starting" | "recording" | "finalizing"
-  >("idle");
+  const [meetingPhase, setMeetingPhase] = useState<MeetingPhase>("idle");
   const [meetingUtterances, setMeetingUtterances] = useState<
     MeetingUtterance[]
   >([]);
+  const [meetings, setMeetings] = useState<MeetingRecord[]>([]);
+  const [selectedMeeting, setSelectedMeeting] = useState<MeetingRecord | null>(
+    null,
+  );
+  const [isLoadingMeetings, setIsLoadingMeetings] = useState(false);
+  const [calendarSnapshot, setCalendarSnapshot] =
+    useState<CalendarSnapshot | null>(null);
+  const [isLoadingCalendar, setIsLoadingCalendar] = useState(false);
+  const [calendarClock, setCalendarClock] = useState(() => Date.now());
+  const [dismissedCalendarMeetings, setDismissedCalendarMeetings] = useState<
+    Set<string>
+  >(() => new Set());
+  const [liveMeetingTitle, setLiveMeetingTitle] = useState("");
+  const [liveMeetingNotes, setLiveMeetingNotes] = useState("");
   const [meetingError, setMeetingError] = useState<string | null>(null);
+  const [meetingPreferences, setMeetingPreferences] =
+    useState<MeetingPreferences>(loadMeetingPreferences);
   const [systemAudioCapability, setSystemAudioCapability] =
     useState<SystemAudioCapability | null>(null);
   const [settingsReady, setSettingsReady] = useState(false);
@@ -269,6 +296,29 @@ export default function App() {
   const modelDropdownRef = useRef<HTMLDivElement | null>(null);
   const meetingSessionInitializedRef = useRef(false);
   const meetingActiveRef = useRef(false);
+  const meetingRecordedMsRef = useRef(0);
+  const meetingRecordingStartedAtRef = useRef<number | null>(null);
+  const liveMeetingTitleRef = useRef("");
+  const liveMeetingNotesRef = useRef("");
+
+  useEffect(() => {
+    liveMeetingTitleRef.current = liveMeetingTitle;
+  }, [liveMeetingTitle]);
+
+  useEffect(() => {
+    liveMeetingNotesRef.current = liveMeetingNotes;
+  }, [liveMeetingNotes]);
+
+  useEffect(() => {
+    try {
+      localStorage.setItem(
+        MEETING_PREFERENCES_STORAGE_KEY,
+        JSON.stringify(meetingPreferences),
+      );
+    } catch (error) {
+      console.warn("Failed to persist meeting preferences:", error);
+    }
+  }, [meetingPreferences]);
 
   useEffect(() => {
     ensureNotificationPermission().catch((error) => {
@@ -307,10 +357,46 @@ export default function App() {
         ),
         await listen("meeting-session-ended", async () => {
           meetingActiveRef.current = false;
+          meetingRecordedMsRef.current = 0;
+          meetingRecordingStartedAtRef.current = null;
           setMeetingPhase("idle");
           if (meetingSessionInitializedRef.current) {
             await invoke("close_gladia_session").catch(console.error);
             meetingSessionInitializedRef.current = false;
+          }
+          try {
+            const savedMeetings =
+              await invoke<MeetingRecord[]>("list_meetings");
+            setMeetings(savedMeetings);
+            const newest = savedMeetings[0];
+            if (newest) {
+              const update: MeetingUpdate = {};
+              if (liveMeetingTitleRef.current.trim()) {
+                update.title = liveMeetingTitleRef.current;
+              }
+              if (liveMeetingNotesRef.current.trim()) {
+                update.notes = liveMeetingNotesRef.current;
+              }
+              const loaded =
+                Object.keys(update).length > 0
+                  ? await invoke<MeetingRecord>("update_meeting", {
+                      id: newest.id,
+                      update,
+                    })
+                  : await invoke<MeetingRecord | null>("get_meeting", {
+                      id: newest.id,
+                    });
+              if (loaded) {
+                setSelectedMeeting(loaded);
+                setMeetings((current) =>
+                  current.map((meeting) =>
+                    meeting.id === loaded.id ? loaded : meeting,
+                  ),
+                );
+              }
+            }
+          } catch (error) {
+            setMeetingError(`Could not load the saved meeting: ${error}`);
           }
           refreshTranscriptionHistoryRef.current().catch(console.error);
         }),
@@ -1883,18 +1969,117 @@ export default function App() {
     setSystemAudioCapability(capability);
   }, [isMac]);
 
+  const refreshMeetings = useCallback(async () => {
+    setIsLoadingMeetings(true);
+    try {
+      setMeetings(await invoke<MeetingRecord[]>("list_meetings"));
+    } catch (error) {
+      setMeetingError(`Could not load meetings: ${error}`);
+    } finally {
+      setIsLoadingMeetings(false);
+    }
+  }, []);
+
+  const refreshCalendarMeetings = useCallback(
+    async (requestAccess: boolean) => {
+      setIsLoadingCalendar(true);
+      try {
+        setCalendarSnapshot(
+          await invoke<CalendarSnapshot>("get_calendar_meetings", {
+            requestAccess,
+          }),
+        );
+      } catch (error) {
+        if (requestAccess) {
+          setMeetingError(`Could not access Calendar: ${error}`);
+        }
+      } finally {
+        setIsLoadingCalendar(false);
+      }
+    },
+    [],
+  );
+
+  useEffect(() => {
+    if (!isMac) return;
+    void refreshCalendarMeetings(false);
+    const interval = window.setInterval(() => {
+      setCalendarClock(Date.now());
+      void refreshCalendarMeetings(false);
+    }, 5 * 60_000);
+    return () => window.clearInterval(interval);
+  }, [isMac, refreshCalendarMeetings]);
+
   useEffect(() => {
     if (navScreen === "meeting") {
       void checkSystemAudioCapability();
+      void refreshMeetings();
+      void refreshCalendarMeetings(false);
     }
-  }, [navScreen, checkSystemAudioCapability]);
+  }, [
+    navScreen,
+    checkSystemAudioCapability,
+    refreshMeetings,
+    refreshCalendarMeetings,
+  ]);
 
-  const handleStartMeeting = async () => {
+  const handleSelectMeeting = async (id: string | null) => {
+    if (id === null) {
+      setSelectedMeeting(null);
+      setMeetingUtterances([]);
+      return;
+    }
+    setIsLoadingMeetings(true);
+    try {
+      const meeting = await invoke<MeetingRecord | null>("get_meeting", { id });
+      setSelectedMeeting(meeting);
+      if (!meeting) setMeetingError("Meeting not found.");
+    } catch (error) {
+      setMeetingError(`Could not open meeting: ${error}`);
+    } finally {
+      setIsLoadingMeetings(false);
+    }
+  };
+
+  const handleUpdateMeeting = useCallback(
+    async (id: string, update: MeetingUpdate): Promise<MeetingRecord> => {
+      const meeting = await invoke<MeetingRecord>("update_meeting", {
+        id,
+        update,
+      });
+      setSelectedMeeting((current) => (current?.id === id ? meeting : current));
+      setMeetings((current) =>
+        current.map((item) => (item.id === id ? meeting : item)),
+      );
+      return meeting;
+    },
+    [],
+  );
+
+  const handleDeleteMeeting = async (id: string) => {
+    await invoke<boolean>("delete_meeting", { id });
+    setSelectedMeeting(null);
+    setMeetings((current) => current.filter((meeting) => meeting.id !== id));
+  };
+
+  const handleExportMeetingMarkdown = (id: string) =>
+    invoke<string>("export_meeting_markdown", { id });
+
+  const handleSaveMeetingMarkdown = (id: string) =>
+    invoke<boolean>("save_meeting_markdown", { id });
+
+  const handleStartMeeting = async (initialTitle = "") => {
     if (meetingActiveRef.current || !apiKeyRef.current.trim()) return;
     meetingActiveRef.current = true;
     setMeetingPhase("starting");
     setMeetingError(null);
     setMeetingUtterances([]);
+    setSelectedMeeting(null);
+    liveMeetingTitleRef.current = initialTitle;
+    setLiveMeetingTitle(initialTitle);
+    setLiveMeetingNotes("");
+    meetingRecordedMsRef.current = 0;
+    meetingRecordingStartedAtRef.current = null;
     try {
       await invoke("init_meeting_session", {
         apiKey: apiKeyRef.current.trim(),
@@ -1921,6 +2106,31 @@ export default function App() {
     }
   };
 
+  const handleCalendarPromptStart = async (
+    meeting: CalendarMeeting,
+    openJoinLink: boolean,
+  ) => {
+    if (openJoinLink && meeting.joinUrl) {
+      await invoke("open_calendar_meeting_url", {
+        url: meeting.joinUrl,
+      }).catch((error) => setMeetingError(String(error)));
+    }
+    setNavScreen("meeting");
+    const capability =
+      systemAudioCapability ??
+      (await invoke<SystemAudioCapability>(
+        "check_system_audio_capability",
+      ).catch(() => null));
+    if (capability) setSystemAudioCapability(capability);
+    const ready =
+      capability?.permission === "authorized" ||
+      (capability?.backend === "core_audio_process_tap" &&
+        capability.permission === "not_determined");
+    if (ready) {
+      await handleStartMeeting(meeting.title);
+    }
+  };
+
   const handleStopMeeting = async () => {
     if (!meetingActiveRef.current) return;
     setMeetingPhase("finalizing");
@@ -1936,6 +2146,59 @@ export default function App() {
       }
     }
   };
+
+  const handlePauseMeeting = async () => {
+    if (!meetingActiveRef.current || meetingPhase !== "recording") return;
+    try {
+      await invoke("pause_meeting_capture");
+      setMeetingPhase("paused");
+    } catch (error) {
+      setMeetingError(String(error));
+    }
+  };
+
+  const handleResumeMeeting = async () => {
+    if (!meetingActiveRef.current || meetingPhase !== "paused") return;
+    setMeetingPhase("starting");
+    try {
+      await invoke("start_meeting_capture", {
+        deviceName: null,
+        deviceSelection: settingsRef.current.audioDeviceSelection,
+      });
+    } catch (error) {
+      setMeetingPhase("paused");
+      setMeetingError(String(error));
+    }
+  };
+
+  useEffect(() => {
+    if (meetingPhase !== "recording") {
+      if (meetingRecordingStartedAtRef.current !== null) {
+        meetingRecordedMsRef.current += Math.max(
+          0,
+          Date.now() - meetingRecordingStartedAtRef.current,
+        );
+        meetingRecordingStartedAtRef.current = null;
+      }
+      return;
+    }
+
+    const startedAt = Date.now();
+    meetingRecordingStartedAtRef.current = startedAt;
+    const remaining = remainingMeetingDurationMs(
+      meetingPreferences.maximumMinutes,
+      meetingRecordedMsRef.current,
+    );
+    if (remaining === null) return;
+    const timer = window.setTimeout(() => void handleStopMeeting(), remaining);
+    return () => {
+      window.clearTimeout(timer);
+      if (meetingRecordingStartedAtRef.current === startedAt) {
+        meetingRecordedMsRef.current += Math.max(0, Date.now() - startedAt);
+        meetingRecordingStartedAtRef.current = null;
+      }
+    };
+  }, [meetingPhase, meetingPreferences.maximumMinutes]);
 
   const handleCancelRecording = async () => {
     if (isRecording) {
@@ -2046,6 +2309,16 @@ export default function App() {
   const activeScreen = resolveScreen(navScreen, permissions, hasSavedApiKey);
   const isGateScreen =
     activeScreen === "permissions" || activeScreen === "api-onboarding";
+  const calendarPromptMeeting = currentCalendarMeeting(
+    calendarSnapshot?.meetings ?? [],
+    calendarClock,
+  );
+  const visibleCalendarPrompt =
+    calendarPromptMeeting &&
+    meetingPhase === "idle" &&
+    !dismissedCalendarMeetings.has(calendarPromptMeeting.id)
+      ? calendarPromptMeeting
+      : null;
 
   if (configLoadPending || !bootstrap) {
     return (
@@ -2189,9 +2462,34 @@ export default function App() {
               phase={meetingPhase}
               systemAudioCapability={systemAudioCapability}
               utterances={meetingUtterances}
+              meetings={meetings}
+              selectedMeeting={selectedMeeting}
+              loading={isLoadingMeetings}
+              calendar={calendarSnapshot}
+              calendarLoading={isLoadingCalendar}
               error={meetingError}
+              liveTitle={liveMeetingTitle}
+              liveNotes={liveMeetingNotes}
+              preferences={meetingPreferences}
+              onPreferencesChange={setMeetingPreferences}
+              onLiveTitleChange={setLiveMeetingTitle}
+              onLiveNotesChange={setLiveMeetingNotes}
               onStart={() => void handleStartMeeting()}
+              onStartFromCalendar={(title) => void handleStartMeeting(title)}
+              onConnectCalendar={() => void refreshCalendarMeetings(true)}
+              onOpenCalendarMeeting={(url) =>
+                invoke("open_calendar_meeting_url", { url }).catch((error) =>
+                  setMeetingError(String(error)),
+                )
+              }
               onStop={() => void handleStopMeeting()}
+              onPause={() => void handlePauseMeeting()}
+              onResume={() => void handleResumeMeeting()}
+              onSelectMeeting={(id) => void handleSelectMeeting(id)}
+              onUpdateMeeting={handleUpdateMeeting}
+              onDeleteMeeting={handleDeleteMeeting}
+              onExportMarkdown={handleExportMeetingMarkdown}
+              onSaveMarkdown={handleSaveMeetingMarkdown}
               onGrantPermission={() => {
                 invoke<SystemAudioCapability>("request_system_audio_permission")
                   .then(setSystemAudioCapability)
@@ -2266,6 +2564,24 @@ export default function App() {
               setActivationDropdownOpen(true);
             }}
             onDismiss={() => setShowHoldModeWarning(false)}
+          />
+        )}
+        {!isGateScreen && visibleCalendarPrompt && (
+          <MeetingCalendarPrompt
+            meeting={visibleCalendarPrompt}
+            onJoinAndStart={() =>
+              void handleCalendarPromptStart(visibleCalendarPrompt, true)
+            }
+            onStart={() =>
+              void handleCalendarPromptStart(visibleCalendarPrompt, false)
+            }
+            onDismiss={() =>
+              setDismissedCalendarMeetings((current) => {
+                const next = new Set(current);
+                next.add(visibleCalendarPrompt.id);
+                return next;
+              })
+            }
           />
         )}
       </main>

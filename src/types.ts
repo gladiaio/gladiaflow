@@ -96,6 +96,52 @@ export interface MeetingUtterance {
   end?: number;
 }
 
+export type MeetingPhase =
+  "idle" | "starting" | "recording" | "paused" | "finalizing";
+
+export interface MeetingRecord {
+  id: string;
+  title: string;
+  notes: string;
+  summary: string;
+  folder: string;
+  duration: number;
+  speakerNames: Record<string, string>;
+  text: string;
+  utterances: MeetingUtterance[];
+  createdAt: string;
+  updatedAt: string;
+}
+
+export interface MeetingUpdate {
+  title?: string;
+  notes?: string;
+  summary?: string;
+  folder?: string;
+  duration?: number;
+  speakerNames?: Record<string, string>;
+}
+
+export interface CalendarMeeting {
+  id: string;
+  title: string;
+  startAt: string;
+  endAt: string;
+  location?: string;
+  joinUrl?: string;
+}
+
+export interface CalendarSnapshot {
+  status:
+    | "not_determined"
+    | "authorized"
+    | "denied"
+    | "restricted"
+    | "write_only"
+    | "unsupported";
+  meetings: CalendarMeeting[];
+}
+
 export interface SystemAudioCapability {
   backend: "core_audio_process_tap" | "screen_capture_kit" | "unsupported";
   permission: "authorized" | "denied" | "not_determined" | "unsupported";

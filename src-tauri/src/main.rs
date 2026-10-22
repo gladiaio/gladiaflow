@@ -8,6 +8,7 @@ use std::time::{Duration, Instant};
 use tauri::menu::{Menu, MenuItem};
 use tauri::tray::TrayIconBuilder;
 use tauri::{async_runtime::spawn, Emitter, Manager, State};
+use tauri_plugin_dialog::DialogExt;
 use tokio::sync::Mutex as TokioMutex;
 use url::Url;
 
@@ -23,6 +24,7 @@ mod meeting_audio;
 mod permissions;
 mod region;
 mod system_audio;
+mod system_calendar;
 mod utterance_cleaner;
 mod vocabulary;
 
@@ -466,6 +468,73 @@ fn list_transcription_history(
     page_size: Option<u32>,
 ) -> Result<TranscriptionHistoryPage, String> {
     history::list_entries(query.as_deref(), page, page_size)
+}
+
+#[tauri::command]
+fn list_meetings() -> Result<Vec<history::MeetingRecord>, String> {
+    history::list_meetings()
+}
+
+#[tauri::command]
+fn get_meeting(id: String) -> Result<Option<history::MeetingRecord>, String> {
+    history::get_meeting(&id)
+}
+
+#[tauri::command]
+fn update_meeting(
+    id: String,
+    update: history::MeetingUpdate,
+) -> Result<history::MeetingRecord, String> {
+    history::update_meeting(&id, update)
+}
+
+#[tauri::command]
+fn delete_meeting(id: String) -> Result<bool, String> {
+    history::delete_meeting(&id)
+}
+
+#[tauri::command]
+fn export_meeting_markdown(id: String) -> Result<String, String> {
+    history::meeting_markdown(&id)
+}
+
+#[tauri::command]
+async fn save_meeting_markdown(id: String, app: tauri::AppHandle) -> Result<bool, String> {
+    let markdown = history::meeting_markdown(&id)?;
+    let mut builder = app
+        .dialog()
+        .file()
+        .set_file_name("meeting-notes.md")
+        .add_filter("Markdown", &["md"]);
+    if let Some(downloads) = dirs::download_dir() {
+        builder = builder.set_directory(downloads);
+    }
+    match builder.blocking_save_file() {
+        Some(file_path) => {
+            let path = file_path.into_path().map_err(|error| error.to_string())?;
+            std::fs::write(path, markdown).map_err(|error| error.to_string())?;
+            Ok(true)
+        }
+        None => Ok(false),
+    }
+}
+
+#[tauri::command]
+async fn get_calendar_meetings(
+    request_access: bool,
+) -> Result<system_calendar::CalendarSnapshot, String> {
+    tokio::task::spawn_blocking(move || system_calendar::meetings(request_access))
+        .await
+        .map_err(|error| format!("Failed to join Calendar task: {error}"))?
+}
+
+#[tauri::command]
+fn open_calendar_meeting_url(url: String) -> Result<(), String> {
+    let parsed = Url::parse(&url).map_err(|_| "Invalid meeting URL".to_string())?;
+    if parsed.scheme() != "https" || parsed.host_str().is_none() {
+        return Err("Only HTTPS meeting links can be opened".to_string());
+    }
+    open::that_detached(parsed.as_str()).map_err(|error| error.to_string())
 }
 
 #[tauri::command]
@@ -1230,6 +1299,17 @@ async fn stop_and_drain_meeting(state: &AppState) -> Result<(), String> {
 }
 
 #[tauri::command]
+async fn pause_meeting_capture(state: State<'_, AppState>) -> Result<(), String> {
+    let _lifecycle = state.audio_lifecycle.lock().await;
+    if *state.capture_mode.lock().await != Some("meeting") {
+        return Err("Meeting capture is not active".to_string());
+    }
+    let result = stop_and_drain_meeting(&state).await;
+    *state.capture_mode.lock().await = None;
+    result
+}
+
+#[tauri::command]
 async fn stop_meeting(state: State<'_, AppState>) -> Result<(), String> {
     let _lifecycle = state.audio_lifecycle.lock().await;
     let result = stop_and_drain_meeting(&state).await;
@@ -1798,6 +1878,14 @@ fn main() {
             test_gladia_connection,
             list_live_models,
             list_transcription_history,
+            list_meetings,
+            get_meeting,
+            update_meeting,
+            delete_meeting,
+            export_meeting_markdown,
+            save_meeting_markdown,
+            get_calendar_meetings,
+            open_calendar_meeting_url,
             open_external_url,
             send_audio_chunk,
             stop_recording,
@@ -1812,6 +1900,7 @@ fn main() {
             stop_audio_capture,
             stop_dictation,
             start_meeting_capture,
+            pause_meeting_capture,
             stop_meeting,
             get_recording_state,
             set_recording_state,
