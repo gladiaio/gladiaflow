@@ -10,6 +10,7 @@
     "frontendDist": "../dist"
   },
   "app": {
+    "macOSPrivateApi": true,
     "windows": [
       {
         "label": "main",
@@ -28,6 +29,7 @@
         "resizable": false,
         "decorations": false,
         "transparent": true,
+        "backgroundColor": "#00000000",
         "alwaysOnTop": true,
         "skipTaskbar": true,
         "shadow": false,
@@ -41,6 +43,7 @@
         "resizable": false,
         "decorations": false,
         "transparent": true,
+        "backgroundColor": "#00000000",
         "alwaysOnTop": true,
         "skipTaskbar": true,
         "shadow": false,
