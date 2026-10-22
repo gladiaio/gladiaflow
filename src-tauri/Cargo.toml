@@ -16,7 +16,7 @@ tokio = { version = "1", features = ["full"] }
 reqwest = { version = "0.12", features = ["json", "stream"] }
 tokio-tungstenite = { version = "0.24", features = ["connect", "native-tls"] }
 tokio-util = { version = "0.7", features = ["io"] }
-cpal = "=0.17.3"
+cpal = "=0.18.2"
 thiserror = "2"
 anyhow = "1"
 url = "2"
@@ -41,6 +41,7 @@ unicode-segmentation = "1"
 core-graphics = "0.24"
 core-foundation = "0.10"
 coreaudio-rs = "0.14"
+screencapturekit = { version = "11", default-features = false, features = ["macos_13_0"] }
 objc2 = "0.5"
 block2 = "0.5"
 objc2_06 = { package = "objc2", version = "0.6" }

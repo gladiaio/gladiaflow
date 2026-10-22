@@ -80,6 +80,26 @@ export interface TranscriptionHistoryEntry {
   id: string;
   text: string;
   created_at: string;
+  kind?: "dictation" | "meeting";
+  utterances?: MeetingUtterance[];
+}
+
+export interface MeetingUtterance {
+  id?: string;
+  text: string;
+  channel: 0 | 1;
+  owner: boolean;
+  /** Session-local Gladia speaker index for the mixed remote channel. */
+  speaker?: number;
+  isFinal?: boolean;
+  start?: number;
+  end?: number;
+}
+
+export interface SystemAudioCapability {
+  backend: "core_audio_process_tap" | "screen_capture_kit" | "unsupported";
+  permission: "authorized" | "denied" | "not_determined" | "unsupported";
+  requiresRestart: boolean;
 }
 
 export interface TranscriptionHistoryPage {

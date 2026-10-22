@@ -4,5 +4,7 @@
 <dict>
 	<key>NSMicrophoneUsageDescription</key>
 	<string>GladiaFlow needs microphone access to capture your voice for real-time dictation.</string>
+	<key>NSAudioCaptureUsageDescription</key>
+	<string>GladiaFlow needs access to your Mac audio to transcribe meeting participants.</string>
 </dict>
 </plist>

@@ -3,7 +3,7 @@
 use nucleo_matcher::pattern::{CaseMatching, Normalization, Pattern};
 use nucleo_matcher::{Matcher, Utf32Str};
 use rusqlite::{params, Connection};
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 use std::path::PathBuf;
 use std::sync::{Mutex, OnceLock};
 
@@ -12,6 +12,21 @@ pub struct TranscriptionHistoryEntry {
     pub id: String,
     pub text: String,
     pub created_at: String,
+    pub kind: String,
+    pub utterances: Vec<MeetingHistoryUtterance>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct MeetingHistoryUtterance {
+    pub text: String,
+    pub channel: u32,
+    pub owner: bool,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub speaker: Option<u32>,
+    #[serde(default)]
+    pub start: f64,
+    #[serde(default)]
+    pub end: f64,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -26,6 +41,8 @@ struct Row {
     session_id: String,
     text: String,
     created_at: String,
+    kind: String,
+    utterances_json: Option<String>,
 }
 
 const DEFAULT_PAGE_SIZE: u32 = 20;
@@ -76,7 +93,62 @@ fn init_schema(conn: &Connection) -> Result<(), String> {
             ON transcriptions(created_at DESC);
         "#,
     )
-    .map_err(|e| e.to_string())
+    .map_err(|e| e.to_string())?;
+    let columns = conn
+        .prepare("PRAGMA table_info(transcriptions)")
+        .and_then(|mut statement| {
+            statement
+                .query_map([], |row| row.get::<_, String>(1))?
+                .collect::<Result<Vec<_>, _>>()
+        })
+        .map_err(|e| e.to_string())?;
+    if !columns.iter().any(|column| column == "kind") {
+        conn.execute(
+            "ALTER TABLE transcriptions ADD COLUMN kind TEXT NOT NULL DEFAULT 'dictation'",
+            [],
+        )
+        .map_err(|e| e.to_string())?;
+    }
+    if !columns.iter().any(|column| column == "utterances_json") {
+        conn.execute(
+            "ALTER TABLE transcriptions ADD COLUMN utterances_json TEXT",
+            [],
+        )
+        .map_err(|e| e.to_string())?;
+    }
+    Ok(())
+}
+
+pub fn save_meeting_entry(
+    session_id: &str,
+    utterances: &[MeetingHistoryUtterance],
+) -> Result<(), String> {
+    let text = utterances
+        .iter()
+        .map(|utterance| utterance.text.trim())
+        .filter(|text| !text.is_empty())
+        .collect::<Vec<_>>()
+        .join(" ");
+    if session_id.trim().is_empty() || text.is_empty() {
+        return Ok(());
+    }
+    let json = serde_json::to_string(utterances).map_err(|e| e.to_string())?;
+    let created_at = chrono::Utc::now().to_rfc3339();
+    with_connection(|conn| {
+        conn.execute(
+            "INSERT INTO transcriptions
+                (session_id, text, created_at, kind, utterances_json)
+             VALUES (?1, ?2, ?3, 'meeting', ?4)
+             ON CONFLICT(session_id) DO UPDATE SET
+                text = excluded.text,
+                created_at = excluded.created_at,
+                kind = excluded.kind,
+                utterances_json = excluded.utterances_json",
+            params![session_id.trim(), text, created_at, json],
+        )
+        .map_err(|e| e.to_string())?;
+        Ok(())
+    })
 }
 
 pub fn save_entry(session_id: &str, text: &str) -> Result<(), String> {
@@ -144,7 +216,7 @@ fn list_entries_conn(
     let offset = (page - 1) * page_size;
     let mut stmt = conn
         .prepare(
-            "SELECT session_id, text, created_at FROM transcriptions
+            "SELECT session_id, text, created_at, kind, utterances_json FROM transcriptions
              ORDER BY created_at DESC LIMIT ?1 OFFSET ?2",
         )
         .map_err(|e| e.to_string())?;
@@ -154,6 +226,8 @@ fn list_entries_conn(
                 session_id: row.get(0)?,
                 text: row.get(1)?,
                 created_at: row.get(2)?,
+                kind: row.get(3)?,
+                utterances_json: row.get(4)?,
             })
         })
         .map_err(|e| e.to_string())?
@@ -173,7 +247,10 @@ fn list_entries_conn(
 
 fn load_all_rows(conn: &Connection) -> Result<Vec<Row>, String> {
     let mut stmt = conn
-        .prepare("SELECT session_id, text, created_at FROM transcriptions ORDER BY created_at DESC")
+        .prepare(
+            "SELECT session_id, text, created_at, kind, utterances_json
+             FROM transcriptions ORDER BY created_at DESC",
+        )
         .map_err(|e| e.to_string())?;
     let rows = stmt
         .query_map([], |row| {
@@ -181,6 +258,8 @@ fn load_all_rows(conn: &Connection) -> Result<Vec<Row>, String> {
                 session_id: row.get(0)?,
                 text: row.get(1)?,
                 created_at: row.get(2)?,
+                kind: row.get(3)?,
+                utterances_json: row.get(4)?,
             })
         })
         .map_err(|e| e.to_string())?
@@ -215,6 +294,11 @@ fn row_to_entry(row: Row) -> TranscriptionHistoryEntry {
         id: row.session_id,
         text: row.text,
         created_at: row.created_at,
+        kind: row.kind,
+        utterances: row
+            .utterances_json
+            .and_then(|json| serde_json::from_str(&json).ok())
+            .unwrap_or_default(),
     }
 }
 
@@ -290,6 +374,33 @@ mod tests {
         save_entry_conn(&conn, "sess-empty", "   ").unwrap();
         let page = list_entries_conn(&conn, None, 1, 20).unwrap();
         assert_eq!(page.total, 0);
+    }
+
+    #[test]
+    fn meeting_rows_restore_channel_ownership() {
+        let conn = test_conn();
+        let utterances = serde_json::json!([
+            {"text":"hello","channel":0,"owner":true},
+            {"text":"welcome","channel":1,"owner":false,"speaker":2}
+        ]);
+        conn.execute(
+            "INSERT INTO transcriptions
+                (session_id, text, created_at, kind, utterances_json)
+             VALUES (?1, ?2, ?3, 'meeting', ?4)",
+            params![
+                "meeting-1",
+                "hello welcome",
+                "2026-01-01T00:00:00Z",
+                utterances.to_string()
+            ],
+        )
+        .unwrap();
+
+        let page = list_entries_conn(&conn, None, 1, 20).unwrap();
+        assert_eq!(page.items[0].kind, "meeting");
+        assert!(page.items[0].utterances[0].owner);
+        assert_eq!(page.items[0].utterances[1].channel, 1);
+        assert_eq!(page.items[0].utterances[1].speaker, Some(2));
     }
 
     fn save_entry_conn(conn: &Connection, session_id: &str, text: &str) -> Result<(), String> {

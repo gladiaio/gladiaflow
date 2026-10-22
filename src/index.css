@@ -19,6 +19,43 @@
   --radius-xl: var(--radius-3);
 }
 
+.meeting-view {
+  display: flex;
+  flex-direction: column;
+  gap: 20px;
+}
+
+.meeting-actions {
+  flex-shrink: 0;
+}
+
+.meeting-transcript {
+  min-height: 280px;
+  max-height: 430px;
+  overflow-y: auto;
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+  padding: 16px;
+  border: 1px solid var(--border-card);
+  border-radius: 12px;
+}
+
+.meeting-utterance {
+  display: grid;
+  grid-template-columns: 64px 1fr;
+  gap: 12px;
+  line-height: 1.45;
+}
+
+.meeting-utterance--owner strong {
+  color: var(--text-brand);
+}
+
+.meeting-history-preview p {
+  margin: 0 0 4px;
+}
+
 * {
   margin: 0;
   padding: 0;
