@@ -21,7 +21,7 @@ import type {
 } from "./types";
 import { invoke } from "@tauri-apps/api/core";
 import { getVersion } from "@tauri-apps/api/app";
-import { listen } from "@tauri-apps/api/event";
+import { emitTo, listen } from "@tauri-apps/api/event";
 import { getCurrentWindow } from "@tauri-apps/api/window";
 import {
   error as logError,
@@ -72,7 +72,7 @@ import { HISTORY_PAGE_SIZE } from "./components/HistoryView";
 import { HoldModeWarningToast } from "./components/HoldModeWarningToast";
 import { ConfigResetDialog } from "./components/ConfigResetDialog";
 import { MeetingView } from "./components/MeetingView";
-import { MeetingCalendarPrompt } from "./components/MeetingCalendarPrompt";
+import type { FloatingMeetingAction } from "./components/FloatingMeetingWindows";
 import {
   currentCalendarMeeting,
   loadMeetingPreferences,
@@ -2164,6 +2164,43 @@ export default function App() {
   };
 
   useEffect(() => {
+    let cleanup: (() => void) | undefined;
+    void listen<FloatingMeetingAction>(
+      "meeting-floating-action",
+      ({ payload }) => {
+        switch (payload.action) {
+          case "open":
+            setNavScreen("meeting");
+            void invoke("show_window");
+            break;
+          case "pause":
+            void handlePauseMeeting();
+            break;
+          case "resume":
+            void handleResumeMeeting();
+            break;
+          case "stop":
+            void handleStopMeeting();
+            break;
+          case "calendar-start":
+            void handleCalendarPromptStart(payload.meeting, payload.join);
+            break;
+          case "calendar-dismiss":
+            setDismissedCalendarMeetings((current) => {
+              const next = new Set(current);
+              next.add(payload.meetingId);
+              return next;
+            });
+            break;
+        }
+      },
+    ).then((unlisten) => {
+      cleanup = unlisten;
+    });
+    return () => cleanup?.();
+  }, [meetingPhase, systemAudioCapability]);
+
+  useEffect(() => {
     if (meetingPhase !== "recording") {
       if (meetingRecordingStartedAtRef.current !== null) {
         meetingRecordedMsRef.current += Math.max(
@@ -2311,6 +2348,40 @@ export default function App() {
     !dismissedCalendarMeetings.has(calendarPromptMeeting.id)
       ? calendarPromptMeeting
       : null;
+
+  useEffect(() => {
+    const visible = meetingPhase !== "idle";
+    void invoke("set_floating_window", {
+      label: "meeting-controller",
+      visible,
+    })
+      .then(() =>
+        visible
+          ? emitTo("meeting-controller", "meeting-controller-state", {
+              phase: meetingPhase,
+            })
+          : undefined,
+      )
+      .catch((error) =>
+        console.error("Failed to synchronize meeting controller:", error),
+      );
+  }, [meetingPhase]);
+
+  useEffect(() => {
+    const meeting = isGateScreen ? null : visibleCalendarPrompt;
+    void invoke("set_floating_window", {
+      label: "meeting-reminder",
+      visible: Boolean(meeting),
+    })
+      .then(() =>
+        meeting
+          ? emitTo("meeting-reminder", "meeting-reminder-state", { meeting })
+          : undefined,
+      )
+      .catch((error) =>
+        console.error("Failed to synchronize meeting reminder:", error),
+      );
+  }, [isGateScreen, visibleCalendarPrompt]);
 
   if (configLoadPending || !bootstrap) {
     return (
@@ -2556,24 +2627,6 @@ export default function App() {
               setActivationDropdownOpen(true);
             }}
             onDismiss={() => setShowHoldModeWarning(false)}
-          />
-        )}
-        {!isGateScreen && visibleCalendarPrompt && (
-          <MeetingCalendarPrompt
-            meeting={visibleCalendarPrompt}
-            onJoinAndStart={() =>
-              void handleCalendarPromptStart(visibleCalendarPrompt, true)
-            }
-            onStart={() =>
-              void handleCalendarPromptStart(visibleCalendarPrompt, false)
-            }
-            onDismiss={() =>
-              setDismissedCalendarMeetings((current) => {
-                const next = new Set(current);
-                next.add(visibleCalendarPrompt.id);
-                return next;
-              })
-            }
           />
         )}
       </main>

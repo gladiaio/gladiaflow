@@ -1519,6 +1519,59 @@ async fn minimize_window(window: tauri::Window) -> Result<(), String> {
 }
 
 #[tauri::command]
+fn set_floating_window(
+    app_handle: tauri::AppHandle,
+    label: String,
+    visible: bool,
+) -> Result<(), String> {
+    if !matches!(label.as_str(), "meeting-controller" | "meeting-reminder") {
+        return Err("Unknown floating window".to_string());
+    }
+    let window = app_handle
+        .get_webview_window(&label)
+        .ok_or_else(|| format!("Floating window {label} is unavailable"))?;
+    if !visible {
+        return window.hide().map_err(|error| error.to_string());
+    }
+
+    window
+        .set_always_on_top(true)
+        .map_err(|error| error.to_string())?;
+    #[cfg(target_os = "macos")]
+    window
+        .set_visible_on_all_workspaces(true)
+        .map_err(|error| error.to_string())?;
+
+    if let Some(monitor) = window
+        .current_monitor()
+        .map_err(|error| error.to_string())?
+        .or_else(|| app_handle.primary_monitor().ok().flatten())
+    {
+        let monitor_position = monitor.position();
+        let monitor_size = monitor.size();
+        let window_size = window.outer_size().map_err(|error| error.to_string())?;
+        let margin = 24i32;
+        let (x, y) = if label == "meeting-controller" {
+            (
+                monitor_position.x + margin,
+                monitor_position.y + monitor_size.height as i32
+                    - window_size.height as i32
+                    - margin,
+            )
+        } else {
+            (
+                monitor_position.x + (monitor_size.width as i32 - window_size.width as i32) / 2,
+                monitor_position.y + 48,
+            )
+        };
+        window
+            .set_position(tauri::PhysicalPosition::new(x, y))
+            .map_err(|error| error.to_string())?;
+    }
+    window.show().map_err(|error| error.to_string())
+}
+
+#[tauri::command]
 async fn register_dictation_hotkey(
     hotkey: String,
     state: State<'_, AppState>,
@@ -1930,6 +1983,7 @@ fn main() {
             show_window,
             hide_window,
             minimize_window,
+            set_floating_window,
             config::save_hotkey,
             config::get_hotkey,
             config::save_language_settings,

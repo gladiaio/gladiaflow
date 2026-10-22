@@ -19,6 +19,32 @@
         "resizable": false,
         "fullscreen": false,
         "visible": true
+      },
+      {
+        "label": "meeting-controller",
+        "title": "GladiaFlow Meeting",
+        "width": 248,
+        "height": 64,
+        "resizable": false,
+        "decorations": false,
+        "transparent": true,
+        "alwaysOnTop": true,
+        "skipTaskbar": true,
+        "shadow": false,
+        "visible": false
+      },
+      {
+        "label": "meeting-reminder",
+        "title": "GladiaFlow Meeting Reminder",
+        "width": 660,
+        "height": 156,
+        "resizable": false,
+        "decorations": false,
+        "transparent": true,
+        "alwaysOnTop": true,
+        "skipTaskbar": true,
+        "shadow": false,
+        "visible": false
       }
     ]
   },
