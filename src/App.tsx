@@ -76,6 +76,7 @@ import { MeetingCalendarPrompt } from "./components/MeetingCalendarPrompt";
 import {
   currentCalendarMeeting,
   loadMeetingPreferences,
+  mergeMeetingUtterance,
   MEETING_PREFERENCES_STORAGE_KEY,
   remainingMeetingDurationMs,
   type MeetingPreferences,
@@ -341,18 +342,9 @@ export default function App() {
         await listen<MeetingUtterance>(
           "meeting-transcription",
           ({ payload }) => {
-            setMeetingUtterances((current) => {
-              const index = current.findIndex(
-                (item) =>
-                  item.id === payload.id &&
-                  item.channel === payload.channel &&
-                  item.isFinal !== true,
-              );
-              if (index < 0) return [...current, payload];
-              const next = [...current];
-              next[index] = payload;
-              return next;
-            });
+            setMeetingUtterances((current) =>
+              mergeMeetingUtterance(current, payload),
+            );
           },
         ),
         await listen("meeting-session-ended", async () => {

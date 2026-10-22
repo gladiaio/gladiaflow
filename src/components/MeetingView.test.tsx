@@ -124,6 +124,35 @@ describe("MeetingView", () => {
     expect(html).toContain("2 speakers");
   });
 
+  it("renders the current partial as a separate labelled live turn", () => {
+    const html = render({
+      phase: "recording",
+      utterances: [
+        {
+          id: "final",
+          text: "Confirmed",
+          channel: 1,
+          owner: false,
+          speaker: 0,
+          isFinal: true,
+        },
+        {
+          id: "partial",
+          text: "Still speaking",
+          channel: 1,
+          owner: false,
+          speaker: 0,
+          isFinal: false,
+        },
+      ],
+    });
+
+    expect(html.match(/<strong>Speaker 1<\/strong>/g)).toHaveLength(2);
+    expect(html).toContain("Confirmed");
+    expect(html).toContain("Still speaking");
+    expect(html).toContain("Listening…");
+  });
+
   it("groups consecutive phrases from the same speaker into one turn", () => {
     const turns = groupMeetingUtterances([
       { id: "1", text: "One", channel: 1, owner: false, speaker: 0 },

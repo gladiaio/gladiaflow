@@ -4,6 +4,7 @@ import {
   currentCalendarMeeting,
   generateMeetingSummary,
   loadMeetingPreferences,
+  mergeMeetingUtterance,
   meetingSuggestions,
   parseMeetingPreferences,
   remainingMeetingDurationMs,
@@ -92,6 +93,72 @@ describe("currentCalendarMeeting", () => {
         now,
       ),
     ).toBeNull();
+  });
+});
+
+describe("mergeMeetingUtterance", () => {
+  it("keeps one live partial per channel even when Gladia changes its id", () => {
+    const current = [
+      {
+        id: "old",
+        text: "old partial",
+        channel: 1 as const,
+        owner: false,
+        isFinal: false,
+        start: 1,
+        end: 2,
+      },
+    ];
+    expect(
+      mergeMeetingUtterance(current, {
+        id: "new",
+        text: "new partial",
+        channel: 1,
+        owner: false,
+        isFinal: false,
+        start: 1,
+        end: 3,
+      }),
+    ).toEqual([expect.objectContaining({ id: "new", text: "new partial" })]);
+  });
+
+  it("removes the open partial when its channel receives a final", () => {
+    const merged = mergeMeetingUtterance(
+      [
+        {
+          id: "partial-id",
+          text: "provisional",
+          channel: 1,
+          owner: false,
+          isFinal: false,
+          start: 4,
+          end: 5,
+        },
+        {
+          id: "owner-partial",
+          text: "owner speaking",
+          channel: 0,
+          owner: true,
+          isFinal: false,
+          start: 5,
+          end: 6,
+        },
+      ],
+      {
+        id: "different-final-id",
+        text: "confirmed",
+        channel: 1,
+        owner: false,
+        isFinal: true,
+        start: 4,
+        end: 5,
+      },
+    );
+
+    expect(merged).toEqual([
+      expect.objectContaining({ text: "confirmed", isFinal: true }),
+      expect.objectContaining({ text: "owner speaking", isFinal: false }),
+    ]);
   });
 });
 

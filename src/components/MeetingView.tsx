@@ -284,10 +284,21 @@ export function MeetingView({
 
   const currentUtterances = selectedMeeting?.utterances ?? utterances;
   const speakerNames = selectedMeeting?.speakerNames ?? {};
-  const turns = useMemo(
-    () => groupMeetingUtterances(currentUtterances, speakerNames),
-    [currentUtterances, speakerNames],
-  );
+  const turns = useMemo(() => {
+    if (selectedMeeting) {
+      return groupMeetingUtterances(currentUtterances, speakerNames);
+    }
+    const finalized = currentUtterances.filter(
+      (utterance) => utterance.isFinal !== false,
+    );
+    const partials = currentUtterances.filter(
+      (utterance) => utterance.isFinal === false,
+    );
+    return [
+      ...groupMeetingUtterances(finalized, speakerNames),
+      ...groupMeetingUtterances(partials, speakerNames),
+    ];
+  }, [currentUtterances, selectedMeeting, speakerNames]);
   const speakerCount = new Set(turns.map((turn) => turn.speakerKey)).size;
   const finalText = currentUtterances
     .filter((item) => item.isFinal !== false)

@@ -243,3 +243,32 @@ export function currentCalendarMeeting(
     }) ?? null
   );
 }
+
+export function mergeMeetingUtterance(
+  current: MeetingUtterance[],
+  incoming: MeetingUtterance,
+): MeetingUtterance[] {
+  const withoutOpenPartial = current.filter(
+    (utterance) =>
+      utterance.channel !== incoming.channel || utterance.isFinal !== false,
+  );
+  const withoutDuplicateFinal =
+    incoming.isFinal === false
+      ? withoutOpenPartial
+      : withoutOpenPartial.filter(
+          (utterance) =>
+            utterance.isFinal === false ||
+            utterance.channel !== incoming.channel ||
+            (incoming.id
+              ? utterance.id !== incoming.id
+              : utterance.start !== incoming.start ||
+                utterance.end !== incoming.end),
+        );
+
+  return [...withoutDuplicateFinal, incoming].sort((left, right) => {
+    const startDifference = (left.start ?? 0) - (right.start ?? 0);
+    if (startDifference !== 0) return startDifference;
+    if (left.isFinal === right.isFinal) return 0;
+    return left.isFinal === false ? 1 : -1;
+  });
+}

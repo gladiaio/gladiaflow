@@ -967,6 +967,9 @@ async fn subscribe_to_meeting_transcriptions(
     spawn(async move {
         let mut utterances = Vec::<history::MeetingHistoryUtterance>::new();
         let mut last_remote_speaker = None;
+        let mut partial_count = 0usize;
+        let mut final_count = 0usize;
+        log::info!("[meeting-transcription] subscription started");
         while let Ok(event) = rx.recv().await {
             match event {
                 gladia::TranscriptionEvent::Partial {
@@ -978,6 +981,7 @@ async fn subscribe_to_meeting_transcriptions(
                     speaker: _,
                     words: _,
                 } => {
+                    partial_count += 1;
                     let Some(channel @ 0..=1) = channel else {
                         let _ = app_handle.emit(
                             "meeting-transcription-error",
@@ -985,6 +989,12 @@ async fn subscribe_to_meeting_transcriptions(
                         );
                         continue;
                     };
+                    if partial_count == 1 {
+                        log::info!(
+                            "[meeting-transcription] first partial received on channel {channel} ({} chars)",
+                            text.chars().count()
+                        );
+                    }
                     let _ = app_handle.emit(
                         "meeting-transcription",
                         MeetingTranscriptEvent {
@@ -1008,6 +1018,7 @@ async fn subscribe_to_meeting_transcriptions(
                     speaker,
                     words,
                 } => {
+                    final_count += 1;
                     let Some(channel @ 0..=1) = channel else {
                         let _ = app_handle.emit(
                             "meeting-transcription-error",
@@ -1015,6 +1026,7 @@ async fn subscribe_to_meeting_transcriptions(
                         );
                         continue;
                     };
+                    let text_length = text.chars().count();
                     let turns = if channel == 0 {
                         vec![MeetingSpeakerTurn {
                             text,
@@ -1025,6 +1037,10 @@ async fn subscribe_to_meeting_transcriptions(
                     } else {
                         meeting_speaker_turns(text, speaker, start, end, words)
                     };
+                    log::info!(
+                        "[meeting-transcription] final #{final_count} on channel {channel} [{start:.2}s-{end:.2}s] ({text_length} chars, {} speaker turns)",
+                        turns.len()
+                    );
                     for (index, turn) in turns.into_iter().enumerate() {
                         let turn_id = if index == 0 {
                             id.clone()
@@ -1061,6 +1077,10 @@ async fn subscribe_to_meeting_transcriptions(
                     let _ = app_handle.emit("meeting-transcription-error", message);
                 }
                 gladia::TranscriptionEvent::SessionEnded => {
+                    log::info!(
+                        "[meeting-transcription] session ended: {partial_count} partials, {final_count} finals, {} stored utterances",
+                        utterances.len()
+                    );
                     utterances.sort_by(|left, right| {
                         left.start
                             .partial_cmp(&right.start)
