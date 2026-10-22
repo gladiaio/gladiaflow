@@ -6,7 +6,7 @@ describe("FloatingMeetingController", () => {
   it("renders persistent meeting controls without the main workspace", () => {
     const html = renderToStaticMarkup(<FloatingMeetingController />);
 
-    expect(html).toContain('aria-label="Open meeting"');
+    expect(html).toContain("Open meeting");
     expect(html).toContain('aria-label="Pause meeting"');
     expect(html).toContain('aria-label="Stop meeting"');
   });

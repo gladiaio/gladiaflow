@@ -1550,13 +1550,15 @@ fn set_floating_window(
         let monitor_position = monitor.position();
         let monitor_size = monitor.size();
         let window_size = window.outer_size().map_err(|error| error.to_string())?;
-        let margin = 24i32;
+        let scale = monitor.scale_factor();
+        let margin = (24.0 * scale).round() as i32;
+        let dock_clearance = (96.0 * scale).round() as i32;
         let (x, y) = if label == "meeting-controller" {
             (
                 monitor_position.x + margin,
                 monitor_position.y + monitor_size.height as i32
                     - window_size.height as i32
-                    - margin,
+                    - dock_clearance,
             )
         } else {
             (

@@ -1176,9 +1176,10 @@ body {
   -moz-osx-font-smoothing: grayscale;
 }
 
-body:has(.floating-surface),
-#root:has(.floating-surface) {
-  background: transparent;
+html.floating-window,
+body.floating-window,
+body.floating-window #root {
+  background: transparent !important;
 }
 
 .floating-surface {

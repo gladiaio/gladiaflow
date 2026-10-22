@@ -23,8 +23,8 @@
       {
         "label": "meeting-controller",
         "title": "GladiaFlow Meeting",
-        "width": 248,
-        "height": 64,
+        "width": 140,
+        "height": 56,
         "resizable": false,
         "decorations": false,
         "transparent": true,

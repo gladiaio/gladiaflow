@@ -46,7 +46,7 @@ export function FloatingMeetingController() {
     >
       <button
         className="floating-meeting-open"
-        aria-label="Open meeting"
+        aria-label={`Open meeting — ${paused ? "paused" : busy ? "working" : "recording"}`}
         onClick={() => void sendAction({ action: "open" })}
       >
         <span className="floating-meeting-wave" aria-hidden="true">
@@ -55,7 +55,6 @@ export function FloatingMeetingController() {
           <i />
           <i />
         </span>
-        <span>{paused ? "Paused" : busy ? "Working…" : "Meeting"}</span>
       </button>
       <button
         className="floating-meeting-toggle"
