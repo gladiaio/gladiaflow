@@ -73,6 +73,35 @@ describe("MeetingView", () => {
     expect(render({ phase: "recording" })).toContain("Stop meeting");
   });
 
+  it("keeps finalized text visible while showing the current partial", () => {
+    const html = render({
+      phase: "recording",
+      utterances: [
+        {
+          id: "final",
+          text: "Finalized sentence",
+          channel: 1,
+          owner: false,
+          speaker: 0,
+          isFinal: true,
+        },
+        {
+          id: "partial",
+          text: "Current partial",
+          channel: 1,
+          owner: false,
+          speaker: 1,
+          isFinal: false,
+        },
+      ],
+    });
+
+    expect(html).toContain("Finalized sentence");
+    expect(html).toContain("Current partial");
+    expect(html).toContain("Listening…");
+    expect(html).toContain("2 speakers");
+  });
+
   it("groups consecutive phrases from the same speaker into one turn", () => {
     const turns = groupMeetingUtterances([
       { id: "1", text: "One", channel: 1, owner: false, speaker: 0 },
@@ -90,7 +119,8 @@ describe("MeetingView", () => {
     const html = render({
       utterances: [{ text: "Done", channel: 0, owner: true, isFinal: true }],
     });
-    expect(html).toContain("Meeting transcript");
+    expect(html).toContain("Done");
+    expect(html).toContain("Saved");
     expect(html).toContain("New meeting");
   });
 });

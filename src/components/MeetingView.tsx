@@ -82,12 +82,20 @@ export function MeetingView({
   const startedAtRef = useRef<number | null>(null);
   const [elapsedSeconds, setElapsedSeconds] = useState(0);
   const [followingLive, setFollowingLive] = useState(true);
+  const [copied, setCopied] = useState(false);
 
   useEffect(() => {
+    if (phase === "starting") {
+      startedAtRef.current = null;
+      setElapsedSeconds(0);
+      setFollowingLive(true);
+      setCopied(false);
+      return;
+    }
     if (recording && startedAtRef.current === null) {
       startedAtRef.current = Date.now();
     }
-    if (phase === "idle") {
+    if (phase === "idle" && utterances.length === 0) {
       startedAtRef.current = null;
       setElapsedSeconds(0);
       setFollowingLive(true);
@@ -105,7 +113,7 @@ export function MeetingView({
     updateElapsed();
     const interval = window.setInterval(updateElapsed, 1000);
     return () => window.clearInterval(interval);
-  }, [phase, recording]);
+  }, [phase, recording, utterances.length]);
 
   useEffect(() => {
     if (!followingLive) return;
@@ -133,6 +141,27 @@ export function MeetingView({
     const number = turn.label.match(/^Speaker (\d+)$/)?.[1];
     return number ? `S${number}` : "O";
   };
+  const speakerCount = useMemo(
+    () => new Set(turns.map((turn) => turn.label)).size,
+    [turns],
+  );
+  const copyTranscript = async () => {
+    const transcript = turns
+      .flatMap((turn) =>
+        turn.utterances
+          .filter((utterance) => utterance.isFinal !== false)
+          .map((utterance) => `${turn.label}: ${utterance.text}`),
+      )
+      .join("\n");
+    if (!transcript) return;
+    try {
+      await navigator.clipboard.writeText(transcript);
+      setCopied(true);
+      window.setTimeout(() => setCopied(false), 1500);
+    } catch {
+      setCopied(false);
+    }
+  };
 
   return (
     <div className="settings-view meeting-view">
@@ -143,24 +172,6 @@ export function MeetingView({
             Live notes from your microphone and Mac audio.
           </p>
         </div>
-        {active && (
-          <div className="meeting-session-status" aria-live="polite">
-            <span
-              className={`meeting-status-dot${recording ? " meeting-status-dot--live" : ""}`}
-              aria-hidden="true"
-            />
-            <span className="meeting-status-label">
-              {phase === "starting"
-                ? "Starting…"
-                : phase === "finalizing"
-                  ? "Finishing up…"
-                  : "Recording"}
-            </span>
-            <span className="meeting-timer">
-              {formatDuration(elapsedSeconds)}
-            </span>
-          </div>
-        )}
       </div>
 
       {systemAudioCapability?.permission === "unsupported" && (
@@ -255,20 +266,41 @@ export function MeetingView({
       ) : (
         <section className="meeting-live-card">
           <div className="meeting-live-toolbar">
-            <div>
-              <h3>{active ? "Live transcript" : "Meeting transcript"}</h3>
-              <p>
-                {active
-                  ? "Speaker labels settle when each phrase is finalized."
-                  : "The completed transcript is saved in History."}
-              </p>
-            </div>
-            {recording && (
-              <span className="meeting-live-badge">
-                <span aria-hidden="true" />
-                Live
+            <div className="meeting-transcript-meta" aria-live="polite">
+              <span
+                className={`meeting-status-dot${recording ? " meeting-status-dot--live" : ""}`}
+                aria-hidden="true"
+              />
+              <span className="meeting-timer">
+                {formatDuration(elapsedSeconds)}
               </span>
-            )}
+              {speakerCount > 0 && (
+                <>
+                  <span className="meeting-meta-separator">•</span>
+                  <span>
+                    {speakerCount} {speakerCount === 1 ? "speaker" : "speakers"}
+                  </span>
+                </>
+              )}
+            </div>
+            <div className="meeting-transcript-actions">
+              <span className="meeting-transcript-state">
+                {phase === "starting"
+                  ? "Starting…"
+                  : phase === "finalizing"
+                    ? "Finishing…"
+                    : recording
+                      ? "Live"
+                      : "Saved"}
+              </span>
+              <button
+                className="meeting-copy-button"
+                disabled={speakerCount === 0}
+                onClick={() => void copyTranscript()}
+              >
+                {copied ? "Copied" : "Copy"}
+              </button>
+            </div>
           </div>
 
           <div
@@ -301,7 +333,12 @@ export function MeetingView({
                     <span className="meeting-speaker-avatar" aria-hidden="true">
                       {speakerAvatar(turn)}
                     </span>
-                    <strong>{turn.label}</strong>
+                    <div className="meeting-speaker-label">
+                      <strong>{turn.label}</strong>
+                      {turn.utterances.some(
+                        (utterance) => utterance.isFinal === false,
+                      ) && <span>Listening…</span>}
+                    </div>
                   </div>
                   <div className="meeting-turn-copy">
                     {turn.utterances.map((utterance, index) => (
