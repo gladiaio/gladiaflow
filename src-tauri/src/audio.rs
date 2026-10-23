@@ -264,6 +264,7 @@ fn device_has_name(device: &cpal::Device, expected_name: &str) -> bool {
 
 pub struct AudioChunk {
     pub data: Vec<u8>,
+    pub captured_at: Instant,
 }
 
 // Keep software gain modest: aggressive fixed gain clips speech and hurts ASR.
@@ -304,7 +305,7 @@ impl CallbackRateValidator {
 
         let observed = self
             .previous_capture
-            .and_then(|previous| capture.duration_since(&previous))
+            .and_then(|previous| capture.checked_duration_since(previous))
             .and_then(|elapsed| estimate_common_sample_rate(self.previous_frames, elapsed));
         self.previous_capture = Some(capture);
         self.previous_frames = frames;
@@ -782,7 +783,7 @@ fn build_prepared_capture(selection: AudioDeviceSelection) -> Result<PreparedCap
             #[cfg(target_os = "macos")]
             let mut rate_validator = CallbackRateValidator::new();
             device.build_input_stream(
-                &stream_config,
+                stream_config.clone(),
                 move |data: &[$sample], _info: &cpal::InputCallbackInfo| {
                     run_audio_callback_safely(|| {
                         let Some(active) = callback_route.load_full() else {
@@ -832,7 +833,17 @@ fn build_prepared_capture(selection: AudioDeviceSelection) -> Result<PreparedCap
                         apply_software_preamp(&mut samples);
                         let bytes = pcm_f32_to_le_bytes(&samples);
                         if !bytes.is_empty() {
-                            let _ = active.tx.send(AudioChunk { data: bytes });
+                            let callback_latency = _info
+                                .timestamp()
+                                .callback
+                                .saturating_duration_since(_info.timestamp().capture);
+                            let captured_at = Instant::now()
+                                .checked_sub(callback_latency)
+                                .unwrap_or_else(Instant::now);
+                            let _ = active.tx.send(AudioChunk {
+                                data: bytes,
+                                captured_at,
+                            });
                         }
                     });
                 },
@@ -975,10 +986,7 @@ mod tests {
     use super::*;
 
     fn stream_instant_nanos(nanos: u64) -> cpal::StreamInstant {
-        cpal::StreamInstant::new(
-            (nanos / 1_000_000_000) as i64,
-            (nanos % 1_000_000_000) as u32,
-        )
+        cpal::StreamInstant::new(nanos / 1_000_000_000, (nanos % 1_000_000_000) as u32)
     }
 
     /// Feed `input` through the resampler in small chunks (mimicking the

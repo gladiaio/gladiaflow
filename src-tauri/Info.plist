@@ -4,5 +4,9 @@
 <dict>
 	<key>NSMicrophoneUsageDescription</key>
 	<string>GladiaFlow needs microphone access to capture your voice for real-time dictation.</string>
+	<key>NSAudioCaptureUsageDescription</key>
+	<string>GladiaFlow needs access to your Mac audio to transcribe meeting participants.</string>
+	<key>NSCalendarsFullAccessUsageDescription</key>
+	<string>GladiaFlow can show your upcoming meetings so you can start local meeting notes at the right time.</string>
 </dict>
 </plist>

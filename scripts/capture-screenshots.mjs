@@ -17,6 +17,8 @@ const SCREENS = screensArg
       "04-home-recording",
       "04b-home-api-open",
       "05-history",
+      "05f-meeting-saved",
+      "05g-meeting-prompt",
       "05b-history-loading",
       "05c-history-empty",
       "06-vocabulary",

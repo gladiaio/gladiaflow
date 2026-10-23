@@ -12,10 +12,9 @@ use tokio_tungstenite::{MaybeTlsStream, WebSocketStream};
 
 type WsStream = WebSocketStream<MaybeTlsStream<tokio::net::TcpStream>>;
 
-const MAX_PENDING_AUDIO_BYTES: usize = 96_000; // ~3s at 16kHz/16-bit/mono
-/// Unacknowledged audio kept for replay after a reconnection: ~60 s at
-/// 48 kHz/16-bit/mono, the window in which a dropped session can resume.
-const MAX_RESEND_BYTES: usize = 6_000_000;
+const PENDING_AUDIO_SECONDS: usize = 3;
+/// Unacknowledged audio kept for replay after a reconnection.
+const RESEND_AUDIO_SECONDS: usize = 60;
 /// Reconnection attempts per drop, and their delays.
 const RECONNECT_DELAYS_MS: [u64; 3] = [250, 1_000, 2_000];
 /// Drops tolerated per session before giving up.
@@ -95,6 +94,9 @@ pub struct GladiaConfig {
     pub languages: Vec<String>,
     pub code_switching: bool,
     pub endpointing: f64,
+    /// Enterprise live speaker diarization. Meeting sessions enable this so
+    /// several remote voices mixed into the system-audio channel stay distinct.
+    pub diarization: bool,
     pub custom_vocabulary: Vec<CustomVocabEntry>,
     /// Live model code name; `None` lets the host pick its default.
     pub model: Option<String>,
@@ -113,11 +115,19 @@ impl Default for GladiaConfig {
             languages: vec![],
             code_switching: false,
             endpointing: 0.6,
+            diarization: false,
             custom_vocabulary: vec![],
             model: None,
             endpoint: ApiEndpoint::default(),
         }
     }
+}
+
+fn audio_bytes_for_seconds(config: &GladiaConfig, seconds: usize) -> usize {
+    config.sample_rate as usize
+        * config.channels as usize
+        * (config.bit_depth as usize / 8)
+        * seconds
 }
 
 /// What the client asks the WebSocket task to send.
@@ -147,12 +157,21 @@ struct SessionRequest {
     channels: u32,
     endpointing: f64,
     #[serde(skip_serializing_if = "Option::is_none")]
+    diarization: Option<bool>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    diarization_config: Option<DiarizationConfig>,
+    #[serde(skip_serializing_if = "Option::is_none")]
     model: Option<String>,
     messages_config: MessagesConfig,
     #[serde(skip_serializing_if = "Option::is_none")]
     language_config: Option<LanguageConfig>,
     #[serde(skip_serializing_if = "Option::is_none")]
     realtime_processing: Option<RealtimeProcessing>,
+}
+
+#[derive(Debug, Clone, Serialize)]
+struct DiarizationConfig {
+    max_speakers: u32,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -236,9 +255,26 @@ struct TranscriptionData {
 struct Utterance {
     text: String,
     #[serde(default)]
+    channel: Option<u32>,
+    #[serde(default)]
     start: Option<f64>,
     #[serde(default)]
     end: Option<f64>,
+    #[serde(default)]
+    speaker: Option<u32>,
+    #[serde(default)]
+    words: Vec<TranscriptWord>,
+}
+
+#[derive(Debug, Clone, Deserialize, Serialize, PartialEq)]
+pub struct TranscriptWord {
+    pub word: String,
+    #[serde(default)]
+    pub start: Option<f64>,
+    #[serde(default)]
+    pub end: Option<f64>,
+    #[serde(default)]
+    pub speaker: Option<u32>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -266,15 +302,21 @@ fn parse_server_message(text: &str) -> Result<Incoming, serde_json::Error> {
                     Incoming::Transcript(TranscriptionEvent::Final {
                         id: data.id,
                         text: utterance.text,
+                        channel: utterance.channel,
                         start: utterance.start.unwrap_or(-1.0),
                         end: utterance.end.unwrap_or(-1.0),
+                        speaker: utterance.speaker,
+                        words: utterance.words,
                     })
                 }
                 Some(utterance) => Incoming::Transcript(TranscriptionEvent::Partial {
                     id: data.id,
                     text: utterance.text,
+                    channel: utterance.channel,
                     start: utterance.start.unwrap_or(-1.0),
                     end: utterance.end.unwrap_or(-1.0),
+                    speaker: utterance.speaker,
+                    words: utterance.words,
                 }),
                 None => Incoming::Ignored,
             }
@@ -304,20 +346,39 @@ fn describe_server_error(error: Option<&serde_json::Value>) -> String {
 
 /// Audio sent but not yet acknowledged, replayed after a reconnection so
 /// no words are lost.
-#[derive(Debug, Default)]
+#[derive(Debug)]
 struct ResendBuffer {
     /// Each chunk with its end offset (bytes since the session start).
     chunks: VecDeque<(u64, Vec<u8>)>,
     sent_bytes: u64,
     buffered_bytes: usize,
+    limit_bytes: usize,
+}
+
+impl Default for ResendBuffer {
+    fn default() -> Self {
+        Self {
+            chunks: VecDeque::new(),
+            sent_bytes: 0,
+            buffered_bytes: 0,
+            limit_bytes: usize::MAX,
+        }
+    }
 }
 
 impl ResendBuffer {
+    fn with_limit(limit_bytes: usize) -> Self {
+        Self {
+            limit_bytes,
+            ..Self::default()
+        }
+    }
+
     fn push(&mut self, chunk: &[u8]) {
         self.sent_bytes += chunk.len() as u64;
         self.buffered_bytes += chunk.len();
         self.chunks.push_back((self.sent_bytes, chunk.to_vec()));
-        while self.buffered_bytes > MAX_RESEND_BYTES {
+        while self.buffered_bytes > self.limit_bytes {
             match self.chunks.pop_front() {
                 Some((_, dropped)) => self.buffered_bytes -= dropped.len(),
                 None => break,
@@ -405,8 +466,9 @@ async fn run_session_socket(
     session_id: String,
     mut outgoing: tokio::sync::mpsc::UnboundedReceiver<Outgoing>,
     events: Option<broadcast::Sender<TranscriptionEvent>>,
+    resend_limit_bytes: usize,
 ) {
-    let mut resend = ResendBuffer::default();
+    let mut resend = ResendBuffer::with_limit(resend_limit_bytes);
     let mut stop_sent = false;
     let mut reconnects = 0u32;
 
@@ -519,14 +581,20 @@ pub enum TranscriptionEvent {
     Partial {
         id: Option<String>,
         text: String,
+        channel: Option<u32>,
         start: f64,
         end: f64,
+        speaker: Option<u32>,
+        words: Vec<TranscriptWord>,
     },
     Final {
         id: Option<String>,
         text: String,
+        channel: Option<u32>,
         start: f64,
         end: f64,
+        speaker: Option<u32>,
+        words: Vec<TranscriptWord>,
     },
     /// The session failed (server error, refused option, lost connection).
     /// Carries a human-readable reason so the frontend can surface it. A
@@ -590,6 +658,10 @@ fn build_session_request(config: &GladiaConfig) -> SessionRequest {
         bit_depth: config.bit_depth,
         channels: config.channels,
         endpointing: config.endpointing,
+        diarization: config.diarization.then_some(true),
+        diarization_config: config
+            .diarization
+            .then_some(DiarizationConfig { max_speakers: 4 }),
         model: config.model.clone(),
         messages_config: MessagesConfig {
             receive_partial_transcripts: config.receive_partial,
@@ -625,6 +697,7 @@ impl GladiaClient {
         custom_vocabulary: Vec<CustomVocabEntry>,
         endpointing: f64,
         model: Option<String>,
+        diarization: bool,
         endpoint: &ApiEndpoint,
     ) -> Result<String, GladiaError> {
         let normalized_vocabulary = normalize_vocabulary(custom_vocabulary);
@@ -638,6 +711,7 @@ impl GladiaClient {
                 && config.code_switching == code_switching
                 && config.endpointing == endpointing
                 && config.model == model
+                && config.diarization == diarization
                 && config.endpoint == *endpoint;
             drop(config);
 
@@ -670,6 +744,7 @@ impl GladiaClient {
             config.custom_vocabulary = normalized_vocabulary.clone();
             config.endpointing = endpointing;
             config.model = model;
+            config.diarization = diarization;
             config.endpoint = endpoint.clone();
             build_session_request(&config)
         }; // config lock dropped here
@@ -743,11 +818,24 @@ impl GladiaClient {
         Ok(session_id)
     }
 
-    pub async fn set_audio_format(&self, sample_rate: u32, channels: u32, bit_depth: u32) {
+    pub async fn set_audio_format(
+        &self,
+        sample_rate: u32,
+        channels: u32,
+        bit_depth: u32,
+    ) -> Result<(), GladiaError> {
         let mut config = self.config.lock().await;
+        let changed = config.sample_rate != sample_rate
+            || config.channels != channels
+            || config.bit_depth != bit_depth;
         config.sample_rate = sample_rate;
         config.channels = channels;
         config.bit_depth = bit_depth;
+        drop(config);
+        if changed && self.session_id.lock().await.is_some() {
+            self.close_session().await?;
+        }
+        Ok(())
     }
 
     async fn start_websocket_task(&self) -> Result<(), GladiaError> {
@@ -775,6 +863,10 @@ impl GladiaClient {
             .unwrap_or_else(|| "unknown".to_string());
 
         log::info!("[gladia-ws] websocket connected (session id={session_id})");
+        let resend_limit_bytes = {
+            let config = self.config.lock().await;
+            audio_bytes_for_seconds(&config, RESEND_AUDIO_SECONDS)
+        };
 
         let handle = tokio::spawn(run_session_socket(
             ws_stream,
@@ -782,6 +874,7 @@ impl GladiaClient {
             session_id,
             rx,
             transcription_tx,
+            resend_limit_bytes,
         ));
         *self.task_handle.lock().await = Some(handle);
 
@@ -901,11 +994,15 @@ impl GladiaClient {
     }
 
     async fn enqueue_pending_audio(&self, chunk: Vec<u8>) {
+        let pending_limit_bytes = {
+            let config = self.config.lock().await;
+            audio_bytes_for_seconds(&config, PENDING_AUDIO_SECONDS)
+        };
         let mut pending = self.pending_audio.lock().await;
         pending.total_bytes += chunk.len();
         pending.chunks.push_back(chunk);
 
-        while pending.total_bytes > MAX_PENDING_AUDIO_BYTES {
+        while pending.total_bytes > pending_limit_bytes {
             if let Some(dropped) = pending.chunks.pop_front() {
                 pending.total_bytes = pending.total_bytes.saturating_sub(dropped.len());
             } else {
@@ -1085,6 +1182,43 @@ mod tests {
         assert_eq!(body["model"], "solaria-3");
     }
 
+    #[test]
+    fn session_request_preserves_dual_channel_audio_format() {
+        let config = GladiaConfig {
+            sample_rate: 48_000,
+            channels: 2,
+            bit_depth: 16,
+            diarization: true,
+            ..GladiaConfig::default()
+        };
+        let body = serde_json::to_value(build_session_request(&config)).unwrap();
+        assert_eq!(body["sample_rate"], 48_000);
+        assert_eq!(body["channels"], 2);
+        assert_eq!(body["bit_depth"], 16);
+        assert_eq!(body["diarization"], true);
+        assert_eq!(body["diarization_config"]["max_speakers"], 4);
+    }
+
+    #[test]
+    fn regular_live_session_does_not_request_diarization() {
+        let body = serde_json::to_value(build_session_request(&GladiaConfig::default())).unwrap();
+        assert!(body.get("diarization").is_none());
+        assert!(body.get("diarization_config").is_none());
+    }
+
+    #[test]
+    fn audio_buffer_limits_follow_the_negotiated_format() {
+        let mono = GladiaConfig::default();
+        let stereo = GladiaConfig {
+            sample_rate: 48_000,
+            channels: 2,
+            bit_depth: 16,
+            ..GladiaConfig::default()
+        };
+        assert_eq!(audio_bytes_for_seconds(&mono, 3), 96_000);
+        assert_eq!(audio_bytes_for_seconds(&stereo, 3), 576_000);
+    }
+
     #[tokio::test]
     async fn test_connection_uses_custom_api_base_url() {
         let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
@@ -1138,7 +1272,7 @@ mod tests {
         let endpoint = ApiEndpoint::new(base, "us-west");
 
         let result = GladiaClient::new()
-            .init_session("key", None, false, vec![], 0.1, None, &endpoint)
+            .init_session("key", None, false, vec![], 0.1, None, false, &endpoint)
             .await;
 
         assert!(result.is_err());
@@ -1202,14 +1336,30 @@ mod tests {
     fn parses_transcripts_acknowledgments_and_errors() {
         assert_eq!(
             parse_server_message(
-                r#"{"type":"transcript","data":{"id":"1","is_final":true,"utterance":{"text":"Hi","start":0.5,"end":1.0}}}"#
+                r#"{"type":"transcript","data":{"id":"1","is_final":true,"utterance":{"text":"Hi there","channel":1,"start":0.5,"end":1.0,"speaker":1,"words":[{"word":"Hi","start":0.5,"end":0.7,"speaker":0},{"word":"there","start":0.8,"end":1.0,"speaker":1}]}}}"#
             )
             .unwrap(),
             Incoming::Transcript(TranscriptionEvent::Final {
                 id: Some("1".to_string()),
-                text: "Hi".to_string(),
+                text: "Hi there".to_string(),
+                channel: Some(1),
                 start: 0.5,
-                end: 1.0
+                end: 1.0,
+                speaker: Some(1),
+                words: vec![
+                    TranscriptWord {
+                        word: "Hi".to_string(),
+                        start: Some(0.5),
+                        end: Some(0.7),
+                        speaker: Some(0),
+                    },
+                    TranscriptWord {
+                        word: "there".to_string(),
+                        start: Some(0.8),
+                        end: Some(1.0),
+                        speaker: Some(1),
+                    },
+                ],
             })
         );
         assert_eq!(
@@ -1220,8 +1370,11 @@ mod tests {
             Incoming::Transcript(TranscriptionEvent::Partial {
                 id: Some("00_00000002".to_string()),
                 text: "H".to_string(),
+                channel: None,
                 start: 0.2,
                 end: 0.4,
+                speaker: None,
+                words: vec![],
             })
         );
         assert_eq!(
@@ -1232,8 +1385,11 @@ mod tests {
             Incoming::Transcript(TranscriptionEvent::Partial {
                 id: None,
                 text: "H".to_string(),
+                channel: None,
                 start: -1.0,
                 end: -1.0,
+                speaker: None,
+                words: vec![],
             })
         );
         assert_eq!(
@@ -1396,8 +1552,11 @@ mod tests {
             TranscriptionEvent::Final {
                 id: Some("1".to_string()),
                 text: "hello".to_string(),
+                channel: None,
                 start: 0.0,
-                end: 1.0
+                end: 1.0,
+                speaker: None,
+                words: vec![],
             }
         );
         assert_eq!(next_event(&mut rx).await, TranscriptionEvent::SessionEnded);

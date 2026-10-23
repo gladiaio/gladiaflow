@@ -103,10 +103,23 @@ export function TranscriptionHistory({
             aria-label={`Copy transcription from ${formatTimestamp(entry.created_at)}`}
           >
             <div className="transcription-history-content">
-              <p className="transcription-history-preview">
-                {truncateText(entry.text, previewLength)}
-              </p>
+              {entry.kind === "meeting" &&
+              (entry.utterances?.length ?? 0) > 0 ? (
+                <div className="transcription-history-preview meeting-history-preview">
+                  {entry.utterances?.slice(0, 3).map((utterance, index) => (
+                    <p key={index}>
+                      <strong>{utterance.owner ? "You" : "Others"}:</strong>{" "}
+                      {truncateText(utterance.text, previewLength)}
+                    </p>
+                  ))}
+                </div>
+              ) : (
+                <p className="transcription-history-preview">
+                  {truncateText(entry.text, previewLength)}
+                </p>
+              )}
               <span className="transcription-history-time">
+                {entry.kind === "meeting" ? "Meeting · " : ""}
                 {isCopied ? "Copied" : formatTimestamp(entry.created_at)}
               </span>
             </div>

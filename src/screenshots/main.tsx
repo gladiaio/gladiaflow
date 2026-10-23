@@ -33,8 +33,15 @@ style.textContent = `
     text-transform: uppercase;
   }
   .screenshot-frame-wrap .layout {
+    position: relative;
     border-radius: 8px;
     box-shadow: 0 0 0 1px rgba(255, 255, 255, 0.08);
+  }
+  [id="05g-meeting-prompt"] .meeting-calendar-prompt {
+    position: absolute;
+    right: 16px;
+    bottom: 16px;
+    width: 560px;
   }
 `;
 document.head.appendChild(style);

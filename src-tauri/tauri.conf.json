@@ -10,6 +10,7 @@
     "frontendDist": "../dist"
   },
   "app": {
+    "macOSPrivateApi": true,
     "windows": [
       {
         "label": "main",
@@ -19,6 +20,34 @@
         "resizable": false,
         "fullscreen": false,
         "visible": true
+      },
+      {
+        "label": "meeting-controller",
+        "title": "GladiaFlow Meeting",
+        "width": 140,
+        "height": 56,
+        "resizable": false,
+        "decorations": false,
+        "transparent": true,
+        "backgroundColor": "#00000000",
+        "alwaysOnTop": true,
+        "skipTaskbar": true,
+        "shadow": false,
+        "visible": false
+      },
+      {
+        "label": "meeting-reminder",
+        "title": "GladiaFlow Meeting Reminder",
+        "width": 660,
+        "height": 156,
+        "resizable": false,
+        "decorations": false,
+        "transparent": true,
+        "backgroundColor": "#00000000",
+        "alwaysOnTop": true,
+        "skipTaskbar": true,
+        "shadow": false,
+        "visible": false
       }
     ]
   },

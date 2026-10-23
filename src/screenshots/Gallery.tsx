@@ -7,10 +7,17 @@ import { HistoryView } from "../components/HistoryView";
 import { CustomVocabularyView } from "../components/CustomVocabularyView";
 import { TranscriptionSettingsView } from "../components/TranscriptionSettingsView";
 import { AppSettingsView } from "../components/AppSettingsView";
+import { MeetingView } from "../components/MeetingView";
+import { MeetingCalendarPrompt } from "../components/MeetingCalendarPrompt";
 import { DEFAULT_CUSTOM_VOCABULARY } from "../lib/customVocabulary";
 import { DEFAULT_DICTATION_STATS } from "../lib/dictationStats";
 import { EUROPEAN_LANGUAGES } from "../lib/languages";
-import type { AppSettings, TranscriptionHistoryPage } from "../types";
+import { DEFAULT_MEETING_PREFERENCES } from "../lib/meetingWorkspace";
+import type {
+  AppSettings,
+  MeetingRecord,
+  TranscriptionHistoryPage,
+} from "../types";
 
 const noop = () => {};
 const MOCK_SETTINGS: AppSettings = {
@@ -72,6 +79,45 @@ const MOCK_HISTORY: TranscriptionHistoryPage = {
   total: 84,
   page: 1,
   page_size: 4,
+};
+
+const MOCK_MEETING: MeetingRecord = {
+  id: "meeting-saved",
+  title: "Launch planning",
+  notes: "Confirm the final approver and share the rollout checklist.",
+  summary:
+    "The team reviewed next week’s launch plan. Final approval is still required, and Jordan will share the updated rollout checklist.",
+  folder: "Product",
+  duration: 26 * 60 + 18,
+  speakerNames: { owner: "You", "0": "Alex", "1": "Jordan" },
+  text: "Let’s review the launch plan for next week. The rollout is ready. We only need final approval. I’ll send the updated checklist after this call.",
+  utterances: [
+    {
+      id: "saved-1",
+      text: "Let’s review the launch plan for next week.",
+      channel: 0,
+      owner: true,
+      isFinal: true,
+    },
+    {
+      id: "saved-2",
+      text: "The rollout is ready. We only need final approval.",
+      channel: 1,
+      owner: false,
+      speaker: 0,
+      isFinal: true,
+    },
+    {
+      id: "saved-3",
+      text: "I’ll send the updated checklist after this call.",
+      channel: 1,
+      owner: false,
+      speaker: 1,
+      isFinal: true,
+    },
+  ],
+  createdAt: "2026-10-22T12:00:00Z",
+  updatedAt: "2026-10-22T12:26:18Z",
 };
 
 function AppShell({
@@ -276,6 +322,181 @@ export function ScreenshotGallery() {
             onPageChange={noop}
             pageData={MOCK_HISTORY}
             isLoading={false}
+          />
+        </AppShell>
+      </ScreenFrame>
+
+      <ScreenFrame id="wrap-05d-meeting-idle" label="05d Meeting Idle">
+        <AppShell id="05d-meeting-idle" activeScreen="meeting">
+          <MeetingView
+            phase="idle"
+            systemAudioCapability={{
+              backend: "core_audio_process_tap",
+              permission: "authorized",
+              requiresRestart: false,
+            }}
+            utterances={[]}
+            meetings={[]}
+            selectedMeeting={null}
+            loading={false}
+            calendar={{ status: "not_determined", meetings: [] }}
+            calendarLoading={false}
+            error={null}
+            liveTitle=""
+            liveNotes=""
+            preferences={DEFAULT_MEETING_PREFERENCES}
+            onPreferencesChange={noop}
+            onLiveTitleChange={noop}
+            onLiveNotesChange={noop}
+            onStart={noop}
+            onStartFromCalendar={noop}
+            onConnectCalendar={noop}
+            onOpenCalendarMeeting={noop}
+            onStop={noop}
+            onPause={noop}
+            onResume={noop}
+            onSelectMeeting={noop}
+            onUpdateMeeting={async () => {
+              throw new Error("Not available in screenshots");
+            }}
+            onDeleteMeeting={async () => {}}
+            onExportMarkdown={async () => ""}
+            onSaveMarkdown={async () => false}
+            onGrantPermission={noop}
+            onOpenSettings={noop}
+            onRecheckPermission={noop}
+          />
+        </AppShell>
+      </ScreenFrame>
+
+      <ScreenFrame id="wrap-05e-meeting-live" label="05e Meeting Live">
+        <AppShell id="05e-meeting-live" activeScreen="meeting">
+          <MeetingView
+            phase="recording"
+            systemAudioCapability={{
+              backend: "core_audio_process_tap",
+              permission: "authorized",
+              requiresRestart: false,
+            }}
+            utterances={[
+              {
+                id: "meeting-1",
+                text: "Let’s review the launch plan for next week.",
+                channel: 0,
+                owner: true,
+                isFinal: true,
+              },
+              {
+                id: "meeting-2",
+                text: "The rollout is ready. We only need final approval.",
+                channel: 1,
+                owner: false,
+                speaker: 0,
+                isFinal: true,
+              },
+              {
+                id: "meeting-3",
+                text: "I’ll send the updated checklist after this call.",
+                channel: 1,
+                owner: false,
+                speaker: 1,
+                isFinal: false,
+              },
+            ]}
+            meetings={[]}
+            selectedMeeting={null}
+            loading={false}
+            calendar={null}
+            calendarLoading={false}
+            error={null}
+            liveTitle="Launch planning"
+            liveNotes=""
+            preferences={DEFAULT_MEETING_PREFERENCES}
+            onPreferencesChange={noop}
+            onLiveTitleChange={noop}
+            onLiveNotesChange={noop}
+            onStart={noop}
+            onStartFromCalendar={noop}
+            onConnectCalendar={noop}
+            onOpenCalendarMeeting={noop}
+            onStop={noop}
+            onPause={noop}
+            onResume={noop}
+            onSelectMeeting={noop}
+            onUpdateMeeting={async () => {
+              throw new Error("Not available in screenshots");
+            }}
+            onDeleteMeeting={async () => {}}
+            onExportMarkdown={async () => ""}
+            onSaveMarkdown={async () => false}
+            onGrantPermission={noop}
+            onOpenSettings={noop}
+            onRecheckPermission={noop}
+          />
+        </AppShell>
+      </ScreenFrame>
+
+      <ScreenFrame id="wrap-05f-meeting-saved" label="05f Saved Meeting">
+        <AppShell id="05f-meeting-saved" activeScreen="meeting">
+          <MeetingView
+            phase="idle"
+            systemAudioCapability={{
+              backend: "core_audio_process_tap",
+              permission: "authorized",
+              requiresRestart: false,
+            }}
+            utterances={[]}
+            meetings={[MOCK_MEETING]}
+            selectedMeeting={MOCK_MEETING}
+            loading={false}
+            calendar={null}
+            calendarLoading={false}
+            error={null}
+            liveTitle=""
+            liveNotes=""
+            preferences={{
+              ...DEFAULT_MEETING_PREFERENCES,
+              defaultSavedMeetingTab: "summary",
+            }}
+            onPreferencesChange={noop}
+            onLiveTitleChange={noop}
+            onLiveNotesChange={noop}
+            onStart={noop}
+            onStartFromCalendar={noop}
+            onConnectCalendar={noop}
+            onOpenCalendarMeeting={noop}
+            onStop={noop}
+            onPause={noop}
+            onResume={noop}
+            onSelectMeeting={noop}
+            onUpdateMeeting={async () => MOCK_MEETING}
+            onDeleteMeeting={async () => {}}
+            onExportMarkdown={async () => ""}
+            onSaveMarkdown={async () => false}
+            onGrantPermission={noop}
+            onOpenSettings={noop}
+            onRecheckPermission={noop}
+          />
+        </AppShell>
+      </ScreenFrame>
+
+      <ScreenFrame id="wrap-05g-meeting-prompt" label="05g Meeting Prompt">
+        <AppShell id="05g-meeting-prompt" activeScreen="home">
+          <div className="meeting-empty">
+            <strong>Current meeting reminder</strong>
+            <span>Shown from the local macOS Calendar.</span>
+          </div>
+          <MeetingCalendarPrompt
+            meeting={{
+              id: "calendar-retro",
+              title: "Retro",
+              startAt: "2026-10-22T14:00:00Z",
+              endAt: "2026-10-22T15:00:00Z",
+              joinUrl: "https://meet.example.com/retro",
+            }}
+            onJoinAndStart={noop}
+            onStart={noop}
+            onDismiss={noop}
           />
         </AppShell>
       </ScreenFrame>

@@ -8,6 +8,7 @@ use std::time::{Duration, Instant};
 use tauri::menu::{Menu, MenuItem};
 use tauri::tray::TrayIconBuilder;
 use tauri::{async_runtime::spawn, Emitter, Manager, State};
+use tauri_plugin_dialog::DialogExt;
 use tokio::sync::Mutex as TokioMutex;
 use url::Url;
 
@@ -19,8 +20,11 @@ mod hotkey;
 mod hotkey_layout;
 mod keystrokes;
 mod live_typing;
+mod meeting_audio;
 mod permissions;
 mod region;
+mod system_audio;
+mod system_calendar;
 mod utterance_cleaner;
 mod vocabulary;
 
@@ -28,6 +32,7 @@ use audio::{AudioCapture, AudioDeviceInfo, AudioDeviceSelection};
 use gladia::GladiaClient;
 use history::TranscriptionHistoryPage;
 use hotkey::HotkeyManager;
+use meeting_audio::{MeetingAudioCapture, MEETING_SAMPLE_RATE};
 use permissions::accessibility::AccessibilityState;
 use vocabulary::CustomVocabEntry;
 
@@ -57,10 +62,147 @@ impl Default for RecordingState {
     }
 }
 
+#[derive(Clone, serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+struct MeetingTranscriptEvent {
+    id: Option<String>,
+    text: String,
+    channel: u32,
+    owner: bool,
+    speaker: Option<u32>,
+    is_final: bool,
+    start: f64,
+    end: f64,
+}
+
+#[derive(Debug, PartialEq)]
+struct MeetingSpeakerTurn {
+    text: String,
+    speaker: Option<u32>,
+    start: f64,
+    end: f64,
+}
+
+fn meeting_speaker_turns(
+    text: String,
+    speaker: Option<u32>,
+    start: f64,
+    end: f64,
+    words: Vec<gladia::TranscriptWord>,
+) -> Vec<MeetingSpeakerTurn> {
+    if words.is_empty() || words.iter().all(|word| word.speaker.is_none()) {
+        return vec![MeetingSpeakerTurn {
+            text,
+            speaker,
+            start,
+            end,
+        }];
+    }
+
+    let mut turns = Vec::<MeetingSpeakerTurn>::new();
+    for word in words {
+        let word_speaker = word
+            .speaker
+            .or(speaker)
+            .or_else(|| turns.last().and_then(|turn| turn.speaker));
+        if let Some(turn) = turns.last_mut().filter(|turn| turn.speaker == word_speaker) {
+            turn.text.push(' ');
+            turn.text.push_str(&word.word);
+            turn.end = word.end.unwrap_or(turn.end);
+        } else {
+            turns.push(MeetingSpeakerTurn {
+                text: word.word,
+                speaker: word_speaker,
+                start: word.start.unwrap_or(start),
+                end: word.end.unwrap_or(end),
+            });
+        }
+    }
+    turns
+}
+
+fn meeting_partial_speaker(channel: u32, last_remote_speaker: Option<u32>) -> Option<u32> {
+    if channel == 1 {
+        last_remote_speaker
+    } else {
+        None
+    }
+}
+
+#[cfg(test)]
+mod meeting_speaker_turn_tests {
+    use super::{
+        gladia::TranscriptWord, meeting_partial_speaker, meeting_speaker_turns, MeetingSpeakerTurn,
+    };
+
+    fn word(text: &str, speaker: Option<u32>, start: f64, end: f64) -> TranscriptWord {
+        TranscriptWord {
+            word: text.to_string(),
+            start: Some(start),
+            end: Some(end),
+            speaker,
+        }
+    }
+
+    #[test]
+    fn splits_a_remote_final_at_word_level_speaker_changes() {
+        let turns = meeting_speaker_turns(
+            "Hello. Yes, welcome.".to_string(),
+            Some(1),
+            1.0,
+            2.0,
+            vec![
+                word("Hello.", Some(0), 1.0, 1.3),
+                word("Yes,", Some(1), 1.4, 1.6),
+                word("welcome.", Some(1), 1.7, 2.0),
+            ],
+        );
+
+        assert_eq!(
+            turns,
+            vec![
+                MeetingSpeakerTurn {
+                    text: "Hello.".to_string(),
+                    speaker: Some(0),
+                    start: 1.0,
+                    end: 1.3,
+                },
+                MeetingSpeakerTurn {
+                    text: "Yes, welcome.".to_string(),
+                    speaker: Some(1),
+                    start: 1.4,
+                    end: 2.0,
+                },
+            ]
+        );
+    }
+
+    #[test]
+    fn keeps_the_utterance_when_word_labels_are_unavailable() {
+        assert_eq!(
+            meeting_speaker_turns("Still live".to_string(), Some(2), 3.0, 4.0, vec![]),
+            vec![MeetingSpeakerTurn {
+                text: "Still live".to_string(),
+                speaker: Some(2),
+                start: 3.0,
+                end: 4.0,
+            }]
+        );
+    }
+
+    #[test]
+    fn partials_keep_the_last_confirmed_remote_speaker() {
+        assert_eq!(meeting_partial_speaker(1, Some(2)), Some(2));
+        assert_eq!(meeting_partial_speaker(1, None), None);
+        assert_eq!(meeting_partial_speaker(0, Some(2)), None);
+    }
+}
+
 pub struct AppState {
     pub gladia: Arc<TokioMutex<GladiaClient>>,
     pub audio: Arc<AudioCapture>,
     pub audio_lifecycle: Arc<TokioMutex<()>>,
+    pub capture_mode: Arc<TokioMutex<Option<&'static str>>>,
     pub hotkey_manager: Arc<TokioMutex<HotkeyManager>>,
     pub recording_state: Arc<TokioMutex<RecordingState>>,
     pub subscription_active: Arc<std::sync::atomic::AtomicBool>,
@@ -68,6 +210,8 @@ pub struct AppState {
     /// push-to-talk, whether the trigger key is still down.
     pub dictation_key_held: Arc<std::sync::atomic::AtomicBool>,
     pub audio_sender: Arc<TokioMutex<Option<tokio::task::JoinHandle<()>>>>,
+    pub meeting: Arc<MeetingAudioCapture>,
+    pub meeting_sender: Arc<TokioMutex<Option<tokio::task::JoinHandle<()>>>>,
     pub tray_animation: Arc<TokioMutex<Option<tauri::async_runtime::JoinHandle<()>>>>,
     pub region: &'static str,
 }
@@ -226,7 +370,10 @@ async fn init_gladia_session(
         model.as_deref().unwrap_or("default")
     );
     let gladia = state.gladia.lock().await;
-    gladia.set_audio_format(sample_rate, 1, 16).await;
+    gladia
+        .set_audio_format(sample_rate, 1, 16)
+        .await
+        .map_err(|error| error.to_string())?;
     let custom_vocabulary = custom_vocabulary
         .filter(|entries| !entries.is_empty())
         .or_else(|| config::get_custom_vocabulary().ok())
@@ -243,10 +390,48 @@ async fn init_gladia_session(
             custom_vocabulary,
             endpointing,
             model,
+            false,
             &endpoint,
         )
         .await
         .map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+#[allow(clippy::too_many_arguments)]
+async fn init_meeting_session(
+    api_key: String,
+    languages: Option<Vec<String>>,
+    code_switching: Option<bool>,
+    custom_vocabulary: Option<Vec<CustomVocabEntry>>,
+    endpointing: Option<f64>,
+    state: State<'_, AppState>,
+) -> Result<String, String> {
+    let endpoint = gladia::ApiEndpoint::new(config::api_base_url()?, state.region);
+    let model = config::live_model()?;
+    let custom_vocabulary = custom_vocabulary
+        .filter(|entries| !entries.is_empty())
+        .or_else(|| config::get_custom_vocabulary().ok())
+        .unwrap_or_default();
+    let endpointing = endpointing.unwrap_or(config::endpointing()?);
+    let gladia = state.gladia.lock().await;
+    gladia
+        .set_audio_format(MEETING_SAMPLE_RATE, 2, 16)
+        .await
+        .map_err(|error| error.to_string())?;
+    gladia
+        .init_session(
+            &api_key,
+            languages,
+            code_switching.unwrap_or(false),
+            custom_vocabulary,
+            endpointing,
+            model,
+            true,
+            &endpoint,
+        )
+        .await
+        .map_err(|error| error.to_string())
 }
 
 /// The live models the current API base URL offers `api_key`.
@@ -283,6 +468,73 @@ fn list_transcription_history(
     page_size: Option<u32>,
 ) -> Result<TranscriptionHistoryPage, String> {
     history::list_entries(query.as_deref(), page, page_size)
+}
+
+#[tauri::command]
+fn list_meetings() -> Result<Vec<history::MeetingRecord>, String> {
+    history::list_meetings()
+}
+
+#[tauri::command]
+fn get_meeting(id: String) -> Result<Option<history::MeetingRecord>, String> {
+    history::get_meeting(&id)
+}
+
+#[tauri::command]
+fn update_meeting(
+    id: String,
+    update: history::MeetingUpdate,
+) -> Result<history::MeetingRecord, String> {
+    history::update_meeting(&id, update)
+}
+
+#[tauri::command]
+fn delete_meeting(id: String) -> Result<bool, String> {
+    history::delete_meeting(&id)
+}
+
+#[tauri::command]
+fn export_meeting_markdown(id: String) -> Result<String, String> {
+    history::meeting_markdown(&id)
+}
+
+#[tauri::command]
+async fn save_meeting_markdown(id: String, app: tauri::AppHandle) -> Result<bool, String> {
+    let markdown = history::meeting_markdown(&id)?;
+    let mut builder = app
+        .dialog()
+        .file()
+        .set_file_name("meeting-notes.md")
+        .add_filter("Markdown", &["md"]);
+    if let Some(downloads) = dirs::download_dir() {
+        builder = builder.set_directory(downloads);
+    }
+    match builder.blocking_save_file() {
+        Some(file_path) => {
+            let path = file_path.into_path().map_err(|error| error.to_string())?;
+            std::fs::write(path, markdown).map_err(|error| error.to_string())?;
+            Ok(true)
+        }
+        None => Ok(false),
+    }
+}
+
+#[tauri::command]
+async fn get_calendar_meetings(
+    request_access: bool,
+) -> Result<system_calendar::CalendarSnapshot, String> {
+    tokio::task::spawn_blocking(move || system_calendar::meetings(request_access))
+        .await
+        .map_err(|error| format!("Failed to join Calendar task: {error}"))?
+}
+
+#[tauri::command]
+fn open_calendar_meeting_url(url: String) -> Result<(), String> {
+    let parsed = Url::parse(&url).map_err(|_| "Invalid meeting URL".to_string())?;
+    if parsed.scheme() != "https" || parsed.host_str().is_none() {
+        return Err("Only HTTPS meeting links can be opened".to_string());
+    }
+    open::that_detached(parsed.as_str()).map_err(|error| error.to_string())
 }
 
 #[tauri::command]
@@ -534,8 +786,11 @@ async fn subscribe_to_transcriptions(
                 gladia::TranscriptionEvent::Partial {
                     id,
                     text,
+                    channel: _,
                     start,
                     end,
+                    speaker: _,
+                    words: _,
                 } => {
                     partial_count += 1;
                     if partial_count == 1 {
@@ -554,8 +809,11 @@ async fn subscribe_to_transcriptions(
                 gladia::TranscriptionEvent::Final {
                     id,
                     text,
+                    channel: _,
                     start,
                     end,
+                    speaker: _,
+                    words: _,
                 } => {
                     final_count += 1;
                     // Live typing keeps the sentence boundary it already
@@ -685,6 +943,165 @@ async fn subscribe_to_transcriptions(
 }
 
 #[tauri::command]
+async fn subscribe_to_meeting_transcriptions(
+    state: State<'_, AppState>,
+    app_handle: tauri::AppHandle,
+) -> Result<(), String> {
+    use std::sync::atomic::Ordering;
+    if state
+        .subscription_active
+        .compare_exchange(false, true, Ordering::SeqCst, Ordering::SeqCst)
+        .is_err()
+    {
+        return Err("Another transcription subscription is active".to_string());
+    }
+    let mut rx = state
+        .gladia
+        .lock()
+        .await
+        .subscribe_to_transcriptions()
+        .await;
+    let session_id = state.gladia.lock().await.current_session_id().await;
+    let active = state.subscription_active.clone();
+
+    spawn(async move {
+        let mut utterances = Vec::<history::MeetingHistoryUtterance>::new();
+        let mut last_remote_speaker = None;
+        let mut partial_count = 0usize;
+        let mut final_count = 0usize;
+        log::info!("[meeting-transcription] subscription started");
+        while let Ok(event) = rx.recv().await {
+            match event {
+                gladia::TranscriptionEvent::Partial {
+                    id,
+                    text,
+                    channel,
+                    start,
+                    end,
+                    speaker: _,
+                    words: _,
+                } => {
+                    partial_count += 1;
+                    let Some(channel @ 0..=1) = channel else {
+                        let _ = app_handle.emit(
+                            "meeting-transcription-error",
+                            "Gladia returned a transcript without a valid meeting channel",
+                        );
+                        continue;
+                    };
+                    if partial_count == 1 {
+                        log::info!(
+                            "[meeting-transcription] first partial received on channel {channel} ({} chars)",
+                            text.chars().count()
+                        );
+                    }
+                    let _ = app_handle.emit(
+                        "meeting-transcription",
+                        MeetingTranscriptEvent {
+                            id,
+                            text,
+                            channel,
+                            owner: channel == 0,
+                            speaker: meeting_partial_speaker(channel, last_remote_speaker),
+                            is_final: false,
+                            start,
+                            end,
+                        },
+                    );
+                }
+                gladia::TranscriptionEvent::Final {
+                    id,
+                    text,
+                    channel,
+                    start,
+                    end,
+                    speaker,
+                    words,
+                } => {
+                    final_count += 1;
+                    let Some(channel @ 0..=1) = channel else {
+                        let _ = app_handle.emit(
+                            "meeting-transcription-error",
+                            "Gladia returned a transcript without a valid meeting channel",
+                        );
+                        continue;
+                    };
+                    let text_length = text.chars().count();
+                    let turns = if channel == 0 {
+                        vec![MeetingSpeakerTurn {
+                            text,
+                            speaker: None,
+                            start,
+                            end,
+                        }]
+                    } else {
+                        meeting_speaker_turns(text, speaker, start, end, words)
+                    };
+                    log::info!(
+                        "[meeting-transcription] final #{final_count} on channel {channel} [{start:.2}s-{end:.2}s] ({text_length} chars, {} speaker turns)",
+                        turns.len()
+                    );
+                    for (index, turn) in turns.into_iter().enumerate() {
+                        let turn_id = if index == 0 {
+                            id.clone()
+                        } else {
+                            id.as_ref().map(|id| format!("{id}:{index}"))
+                        };
+                        utterances.push(history::MeetingHistoryUtterance {
+                            text: turn.text.clone(),
+                            channel,
+                            owner: channel == 0,
+                            speaker: turn.speaker,
+                            start: turn.start,
+                            end: turn.end,
+                        });
+                        let _ = app_handle.emit(
+                            "meeting-transcription",
+                            MeetingTranscriptEvent {
+                                id: turn_id,
+                                text: turn.text,
+                                channel,
+                                owner: channel == 0,
+                                speaker: turn.speaker,
+                                is_final: true,
+                                start: turn.start,
+                                end: turn.end,
+                            },
+                        );
+                        if channel == 1 && turn.speaker.is_some() {
+                            last_remote_speaker = turn.speaker;
+                        }
+                    }
+                }
+                gladia::TranscriptionEvent::Error(message) => {
+                    let _ = app_handle.emit("meeting-transcription-error", message);
+                }
+                gladia::TranscriptionEvent::SessionEnded => {
+                    log::info!(
+                        "[meeting-transcription] session ended: {partial_count} partials, {final_count} finals, {} stored utterances",
+                        utterances.len()
+                    );
+                    utterances.sort_by(|left, right| {
+                        left.start
+                            .partial_cmp(&right.start)
+                            .unwrap_or(std::cmp::Ordering::Equal)
+                    });
+                    if let Some(session_id) = session_id.as_deref() {
+                        if let Err(error) = history::save_meeting_entry(session_id, &utterances) {
+                            log::warn!("[history] meeting save failed: {error}");
+                        }
+                    }
+                    let _ = app_handle.emit("meeting-session-ended", utterances.clone());
+                    break;
+                }
+            }
+        }
+        active.store(false, Ordering::SeqCst);
+    });
+    Ok(())
+}
+
+#[tauri::command]
 async fn list_audio_devices() -> Result<Vec<String>, String> {
     Ok(audio::list_input_devices())
 }
@@ -718,6 +1135,10 @@ async fn start_audio_capture(
     app_handle: tauri::AppHandle,
 ) -> Result<(), String> {
     let _lifecycle = state.audio_lifecycle.lock().await;
+    let mut capture_mode = state.capture_mode.lock().await;
+    if capture_mode.is_some() {
+        return Err("Another audio capture is already active".to_string());
+    }
 
     if let Some(previous_sender) = state.audio_sender.lock().await.take() {
         if !previous_sender.is_finished() {
@@ -736,6 +1157,7 @@ async fn start_audio_capture(
         .audio
         .start_capture(selection, Some(err_tx))
         .map_err(|e| e.to_string())?;
+    *capture_mode = Some("dictation");
     let sample_rate = state.audio.get_sample_rate();
 
     let err_app = app_handle.clone();
@@ -803,6 +1225,125 @@ async fn start_audio_capture(
     Ok(())
 }
 
+#[tauri::command]
+async fn start_meeting_capture(
+    device_name: Option<String>,
+    device_selection: Option<AudioDeviceSelection>,
+    state: State<'_, AppState>,
+    app_handle: tauri::AppHandle,
+) -> Result<(), String> {
+    let _lifecycle = state.audio_lifecycle.lock().await;
+    let mut capture_mode = state.capture_mode.lock().await;
+    if capture_mode.is_some() {
+        return Err("Another audio capture is already active".to_string());
+    }
+    if let Some(previous_sender) = state.meeting_sender.lock().await.take() {
+        if !previous_sender.is_finished() {
+            *state.meeting_sender.lock().await = Some(previous_sender);
+            return Err("Previous meeting capture is still shutting down".to_string());
+        }
+        let _ = previous_sender.await;
+    }
+
+    let selection = AudioDeviceSelection::from_ipc(device_selection, device_name);
+    let meeting = state.meeting.clone();
+    let (rx, error_rx, microphone_name) =
+        tokio::task::spawn_blocking(move || meeting.start(selection))
+            .await
+            .map_err(|error| format!("Failed to join meeting capture task: {error}"))??;
+    *capture_mode = Some("meeting");
+
+    let error_app = app_handle.clone();
+    tokio::task::spawn_blocking(move || {
+        while let Ok(message) = error_rx.recv() {
+            let event = if message.starts_with("System audio") {
+                "meeting-audio-warning"
+            } else {
+                "meeting-transcription-error"
+            };
+            let _ = error_app.emit(event, message);
+        }
+    });
+    let _ = app_handle.emit(
+        "meeting-capture-ready",
+        serde_json::json!({ "deviceName": microphone_name }),
+    );
+
+    let gladia = state.gladia.clone();
+    let sender = tokio::spawn(async move {
+        let (tx, mut async_rx) = tokio::sync::mpsc::unbounded_channel::<Vec<u8>>();
+        tokio::task::spawn_blocking(move || {
+            while let Ok(chunk) = rx.recv() {
+                if tx.send(chunk).is_err() {
+                    break;
+                }
+            }
+        });
+        let chunk_bytes = MEETING_SAMPLE_RATE as usize * 2 * 2 / 10;
+        let mut buffer = Vec::with_capacity(chunk_bytes * 2);
+        while let Some(chunk) = async_rx.recv().await {
+            buffer.extend_from_slice(&chunk);
+            while buffer.len() >= chunk_bytes {
+                let chunk: Vec<u8> = buffer.drain(..chunk_bytes).collect();
+                if let Err(error) = gladia.lock().await.send_audio(&chunk).await {
+                    log::error!("failed to send meeting audio to Gladia: {error}");
+                }
+            }
+        }
+        if !buffer.is_empty() {
+            let _ = gladia.lock().await.send_audio(&buffer).await;
+        }
+    });
+    *state.meeting_sender.lock().await = Some(sender);
+    Ok(())
+}
+
+async fn stop_and_drain_meeting(state: &AppState) -> Result<(), String> {
+    let meeting = state.meeting.clone();
+    tokio::task::spawn_blocking(move || meeting.stop())
+        .await
+        .map_err(|error| format!("Failed to join meeting cleanup task: {error}"))??;
+    if let Some(mut sender) = state.meeting_sender.lock().await.take() {
+        match tokio::time::timeout(Duration::from_secs(2), &mut sender).await {
+            Ok(Ok(())) => {}
+            Ok(Err(error)) if error.is_cancelled() => {}
+            Ok(Err(error)) => return Err(format!("Meeting sender task failed: {error}")),
+            Err(_) => {
+                sender.abort();
+                let _ = sender.await;
+                return Err("Timed out draining meeting audio".to_string());
+            }
+        }
+    }
+    Ok(())
+}
+
+#[tauri::command]
+async fn pause_meeting_capture(state: State<'_, AppState>) -> Result<(), String> {
+    let _lifecycle = state.audio_lifecycle.lock().await;
+    if *state.capture_mode.lock().await != Some("meeting") {
+        return Err("Meeting capture is not active".to_string());
+    }
+    let result = stop_and_drain_meeting(&state).await;
+    *state.capture_mode.lock().await = None;
+    result
+}
+
+#[tauri::command]
+async fn stop_meeting(state: State<'_, AppState>) -> Result<(), String> {
+    let _lifecycle = state.audio_lifecycle.lock().await;
+    let result = stop_and_drain_meeting(&state).await;
+    *state.capture_mode.lock().await = None;
+    result?;
+    state
+        .gladia
+        .lock()
+        .await
+        .stop_recording()
+        .await
+        .map_err(|error| error.to_string())
+}
+
 #[cfg(test)]
 mod readiness_tests {
     use super::FirstAudioChunkGate;
@@ -842,7 +1383,9 @@ async fn stop_and_drain_audio(state: &AppState) -> Result<(), String> {
 #[tauri::command]
 async fn stop_audio_capture(state: State<'_, AppState>) -> Result<(), String> {
     let _lifecycle = state.audio_lifecycle.lock().await;
-    stop_and_drain_audio(&state).await
+    let result = stop_and_drain_audio(&state).await;
+    *state.capture_mode.lock().await = None;
+    result
 }
 
 /// Stop audio capture AND send the stop_recording signal to Gladia in the
@@ -855,7 +1398,9 @@ async fn stop_dictation(state: State<'_, AppState>) -> Result<(), String> {
     state
         .dictation_key_held
         .store(false, std::sync::atomic::Ordering::SeqCst);
-    stop_and_drain_audio(&state).await?;
+    let stop_result = stop_and_drain_audio(&state).await;
+    *state.capture_mode.lock().await = None;
+    stop_result?;
 
     let gladia = state.gladia.lock().await;
     gladia.stop_recording().await.map_err(|e| e.to_string())
@@ -974,6 +1519,61 @@ async fn minimize_window(window: tauri::Window) -> Result<(), String> {
 }
 
 #[tauri::command]
+fn set_floating_window(
+    app_handle: tauri::AppHandle,
+    label: String,
+    visible: bool,
+) -> Result<(), String> {
+    if !matches!(label.as_str(), "meeting-controller" | "meeting-reminder") {
+        return Err("Unknown floating window".to_string());
+    }
+    let window = app_handle
+        .get_webview_window(&label)
+        .ok_or_else(|| format!("Floating window {label} is unavailable"))?;
+    if !visible {
+        return window.hide().map_err(|error| error.to_string());
+    }
+
+    window
+        .set_always_on_top(true)
+        .map_err(|error| error.to_string())?;
+    #[cfg(target_os = "macos")]
+    window
+        .set_visible_on_all_workspaces(true)
+        .map_err(|error| error.to_string())?;
+
+    if let Some(monitor) = window
+        .current_monitor()
+        .map_err(|error| error.to_string())?
+        .or_else(|| app_handle.primary_monitor().ok().flatten())
+    {
+        let monitor_position = monitor.position();
+        let monitor_size = monitor.size();
+        let window_size = window.outer_size().map_err(|error| error.to_string())?;
+        let scale = monitor.scale_factor();
+        let margin = (24.0 * scale).round() as i32;
+        let dock_clearance = (96.0 * scale).round() as i32;
+        let (x, y) = if label == "meeting-controller" {
+            (
+                monitor_position.x + margin,
+                monitor_position.y + monitor_size.height as i32
+                    - window_size.height as i32
+                    - dock_clearance,
+            )
+        } else {
+            (
+                monitor_position.x + (monitor_size.width as i32 - window_size.width as i32) / 2,
+                monitor_position.y + 48,
+            )
+        };
+        window
+            .set_position(tauri::PhysicalPosition::new(x, y))
+            .map_err(|error| error.to_string())?;
+    }
+    window.show().map_err(|error| error.to_string())
+}
+
+#[tauri::command]
 async fn register_dictation_hotkey(
     hotkey: String,
     state: State<'_, AppState>,
@@ -1018,6 +1618,12 @@ async fn open_system_settings(panel: String) -> Result<(), String> {
             "input_monitoring" => {
                 "x-apple.systempreferences:com.apple.preference.security?Privacy_ListenEvent"
             }
+            "screen_recording" => {
+                "x-apple.systempreferences:com.apple.preference.security?Privacy_ScreenCapture"
+            }
+            "audio_capture" => {
+                "x-apple.systempreferences:com.apple.preference.security?Privacy_AudioCapture"
+            }
             "keyboard" => "x-apple.systempreferences:com.apple.Keyboard-Settings.extension",
             _ => return Err(format!("Unknown panel: {}", panel)),
         };
@@ -1057,6 +1663,18 @@ async fn request_microphone_permission() -> Result<bool, String> {
     tokio::task::spawn_blocking(microphone_permission::request_access)
         .await
         .map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+async fn check_system_audio_capability() -> Result<system_audio::SystemAudioCapability, String> {
+    Ok(system_audio::capability())
+}
+
+#[tauri::command]
+async fn request_system_audio_permission() -> Result<system_audio::SystemAudioCapability, String> {
+    tokio::task::spawn_blocking(system_audio::request_permission)
+        .await
+        .map_err(|e| e.to_string())?
 }
 
 #[cfg(target_os = "macos")]
@@ -1193,15 +1811,19 @@ fn main() {
         .plugin(tauri_plugin_dialog::init())
         .plugin(tauri_plugin_notification::init())
         .setup(|app| {
+            let audio = Arc::new(AudioCapture::new());
             app.manage(AppState {
                 gladia: Arc::new(TokioMutex::new(GladiaClient::new())),
-                audio: Arc::new(AudioCapture::new()),
+                meeting: Arc::new(MeetingAudioCapture::new(audio.clone())),
+                audio,
                 audio_lifecycle: Arc::new(TokioMutex::new(())),
+                capture_mode: Arc::new(TokioMutex::new(None)),
                 hotkey_manager: Arc::new(TokioMutex::new(HotkeyManager::new())),
                 recording_state: Arc::new(TokioMutex::new(RecordingState::default())),
                 subscription_active: Arc::new(std::sync::atomic::AtomicBool::new(false)),
                 dictation_key_held: Arc::new(std::sync::atomic::AtomicBool::new(false)),
                 audio_sender: Arc::new(TokioMutex::new(None)),
+                meeting_sender: Arc::new(TokioMutex::new(None)),
                 tray_animation: Arc::new(TokioMutex::new(None)),
                 region: region::detect_region(),
             });
@@ -1327,21 +1949,34 @@ fn main() {
             config::delete_api_key,
             config::reset_corrupted_config,
             init_gladia_session,
+            init_meeting_session,
             test_gladia_connection,
             list_live_models,
             list_transcription_history,
+            list_meetings,
+            get_meeting,
+            update_meeting,
+            delete_meeting,
+            export_meeting_markdown,
+            save_meeting_markdown,
+            get_calendar_meetings,
+            open_calendar_meeting_url,
             open_external_url,
             send_audio_chunk,
             stop_recording,
             request_notification_permission,
             close_gladia_session,
             subscribe_to_transcriptions,
+            subscribe_to_meeting_transcriptions,
             list_audio_devices,
             list_audio_device_info,
             prepare_audio_capture,
             start_audio_capture,
             stop_audio_capture,
             stop_dictation,
+            start_meeting_capture,
+            pause_meeting_capture,
+            stop_meeting,
             get_recording_state,
             set_recording_state,
             get_region,
@@ -1350,6 +1985,7 @@ fn main() {
             show_window,
             hide_window,
             minimize_window,
+            set_floating_window,
             config::save_hotkey,
             config::get_hotkey,
             config::save_language_settings,
@@ -1379,6 +2015,8 @@ fn main() {
             open_system_settings,
             check_microphone_permission,
             request_microphone_permission,
+            check_system_audio_capability,
+            request_system_audio_permission,
             set_tray_activity,
         ])
         .run(tauri::generate_context!())
