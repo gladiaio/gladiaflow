@@ -1,6 +1,7 @@
 import { useState } from "react";
 import { invoke } from "@tauri-apps/api/core";
 import type { TranscriptionHistoryEntry } from "../types";
+import { Tooltip } from "./InfoTooltip";
 
 function formatTimestamp(createdAt: string): string {
   if (!createdAt) return "Unknown time";
@@ -15,8 +16,9 @@ function truncateText(text: string, maxLength: number): string {
   return `${trimmed.slice(0, maxLength).trimEnd()}…`;
 }
 
-function liveTranscriptionUrl(sessionId: string): string {
-  return `https://app.gladia.io/transcriptions/live/${sessionId}`;
+function noOpenUrlHint(apiBaseUrl: string | null): string {
+  const host = apiBaseUrl ? ` (${apiBaseUrl})` : "";
+  return `No Gladia dashboard link for this custom API URL${host}`;
 }
 
 export function TranscriptionHistory({
@@ -49,10 +51,9 @@ export function TranscriptionHistory({
     entry: TranscriptionHistoryEntry,
   ) => {
     event.stopPropagation();
+    if (!entry.open_url) return;
     try {
-      await invoke("open_external_url", {
-        url: liveTranscriptionUrl(entry.id),
-      });
+      await invoke("open_external_url", { url: entry.open_url });
     } catch (error) {
       console.error("Failed to open transcript in browser:", error);
     }
@@ -111,14 +112,34 @@ export function TranscriptionHistory({
               </span>
             </div>
             <div className="transcription-history-actions">
-              <button
-                type="button"
-                className="btn btn-ghost btn-sm transcription-history-open"
-                onClick={(event) => void handleOpen(event, entry)}
-                aria-label="Open transcript in Gladia"
-              >
-                Open
-              </button>
+              {entry.open_url ? (
+                <button
+                  type="button"
+                  className="btn btn-ghost btn-sm transcription-history-open"
+                  onClick={(event) => void handleOpen(event, entry)}
+                  aria-label="Open transcript in Gladia"
+                >
+                  Open
+                </button>
+              ) : (
+                // Disabled buttons get no hover in WebKit: the wrapper carries
+                // the hint and keeps clicks and keys from copying the row.
+                <Tooltip
+                  className="transcription-history-open-disabled"
+                  content={noOpenUrlHint(entry.api_base_url)}
+                  onClick={(event) => event.stopPropagation()}
+                  onKeyDown={(event) => event.stopPropagation()}
+                >
+                  <button
+                    type="button"
+                    className="btn btn-ghost btn-sm transcription-history-open"
+                    disabled
+                    aria-label={noOpenUrlHint(entry.api_base_url)}
+                  >
+                    Open
+                  </button>
+                </Tooltip>
+              )}
             </div>
           </li>
         );
