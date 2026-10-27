@@ -2,7 +2,7 @@
 // ({config_dir}/gladiaflow/history.db). Survives app upgrades and WebView cache clears.
 use nucleo_matcher::pattern::{CaseMatching, Normalization, Pattern};
 use nucleo_matcher::{Matcher, Utf32Str};
-use rusqlite::{params, Connection};
+use rusqlite::{params, Connection, Transaction, TransactionBehavior};
 use serde::Serialize;
 use std::path::PathBuf;
 use std::sync::{Mutex, OnceLock};
@@ -85,18 +85,31 @@ fn init_schema(conn: &Connection) -> Result<(), String> {
     .map_err(|e| e.to_string())?;
 
     // Added after the first release: older databases lack the column.
-    let has_api_base_url = conn
-        .prepare("SELECT 1 FROM pragma_table_info('transcriptions') WHERE name = 'api_base_url'")
+    if !has_api_base_url_column(conn)? {
+        add_api_base_url_column(conn)?;
+    }
+    Ok(())
+}
+
+fn has_api_base_url_column(conn: &Connection) -> Result<bool, String> {
+    conn.prepare("SELECT 1 FROM pragma_table_info('transcriptions') WHERE name = 'api_base_url'")
         .and_then(|mut stmt| stmt.exists([]))
+        .map_err(|e| e.to_string())
+}
+
+/// DB_LOCK only serializes this process: another app instance may be adding
+/// the column too. Check again under SQLite's write lock so only one adds it.
+fn add_api_base_url_column(conn: &Connection) -> Result<(), String> {
+    let tx = Transaction::new_unchecked(conn, TransactionBehavior::Immediate)
         .map_err(|e| e.to_string())?;
-    if !has_api_base_url {
-        conn.execute(
+    if !has_api_base_url_column(&tx)? {
+        tx.execute(
             "ALTER TABLE transcriptions ADD COLUMN api_base_url TEXT",
             [],
         )
         .map_err(|e| e.to_string())?;
     }
-    Ok(())
+    tx.commit().map_err(|e| e.to_string())
 }
 
 pub fn save_entry(session_id: &str, api_base_url: &str, text: &str) -> Result<(), String> {
@@ -452,5 +465,37 @@ mod tests {
             page.items[0].open_url.as_deref(),
             Some("https://app.gladia.io/transcriptions/live/sess-old")
         );
+    }
+
+    #[test]
+    fn concurrent_instances_add_api_base_url_once() {
+        let path = std::env::temp_dir().join(format!(
+            "gladiaflow-history-migration-{}.db",
+            std::process::id()
+        ));
+        let _ = std::fs::remove_file(&path);
+        let first = Connection::open(&path).unwrap();
+        first
+            .execute_batch(
+                "CREATE TABLE transcriptions (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    session_id TEXT NOT NULL UNIQUE,
+                    text TEXT NOT NULL,
+                    created_at TEXT NOT NULL
+                );",
+            )
+            .unwrap();
+        let second = Connection::open(&path).unwrap();
+
+        // Both instances saw the column missing; the first one adds it before
+        // the second takes the write lock.
+        assert!(!has_api_base_url_column(&first).unwrap());
+        assert!(!has_api_base_url_column(&second).unwrap());
+        add_api_base_url_column(&first).unwrap();
+        add_api_base_url_column(&second).unwrap();
+
+        assert!(has_api_base_url_column(&second).unwrap());
+        drop((first, second));
+        std::fs::remove_file(&path).unwrap();
     }
 }
