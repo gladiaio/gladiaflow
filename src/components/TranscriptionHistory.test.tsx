@@ -32,7 +32,13 @@ describe("TranscriptionHistory", () => {
     ]);
     expect(html).toMatch(/<button[^>]*disabled/);
     expect(html).toContain(
-      'title="No Gladia dashboard link for this custom API URL (http://localhost:8080)"',
+      'aria-label="No Gladia dashboard link for this custom API URL (http://localhost:8080)"',
+    );
+    // The webview shows no native title tooltip: the hint is a focusable
+    // Tooltip trigger instead.
+    expect(html).not.toContain("title=");
+    expect(html).toMatch(
+      /<span class="transcription-history-open-disabled" tabindex="0"/,
     );
   });
 });

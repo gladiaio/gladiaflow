@@ -1,6 +1,7 @@
 import { useState } from "react";
 import { invoke } from "@tauri-apps/api/core";
 import type { TranscriptionHistoryEntry } from "../types";
+import { Tooltip } from "./InfoTooltip";
 
 function formatTimestamp(createdAt: string): string {
   if (!createdAt) return "Unknown time";
@@ -122,11 +123,12 @@ export function TranscriptionHistory({
                 </button>
               ) : (
                 // Disabled buttons get no hover in WebKit: the wrapper carries
-                // the hint and keeps clicks from copying the row.
-                <span
+                // the hint and keeps clicks and keys from copying the row.
+                <Tooltip
                   className="transcription-history-open-disabled"
-                  title={noOpenUrlHint(entry.api_base_url)}
+                  content={noOpenUrlHint(entry.api_base_url)}
                   onClick={(event) => event.stopPropagation()}
+                  onKeyDown={(event) => event.stopPropagation()}
                 >
                   <button
                     type="button"
@@ -136,7 +138,7 @@ export function TranscriptionHistory({
                   >
                     Open
                   </button>
-                </span>
+                </Tooltip>
               )}
             </div>
           </li>
