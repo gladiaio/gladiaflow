@@ -396,6 +396,122 @@ async fn reconnect(url: &str, session_id: &str) -> Option<WsStream> {
     None
 }
 
+/// What one session's WebSocket exchanged with Gladia. Logged when the
+/// session task ends, including when `close_session` aborts it after the
+/// stop timeout, so a server that accepts audio but never answers is visible.
+struct SessionDiagnostics {
+    session_id: String,
+    started: std::time::Instant,
+    audio_bytes_sent: u64,
+    acked_bytes: u64,
+    first_ack_after: Option<std::time::Duration>,
+    server_messages: u32,
+    partials: u32,
+    finals: u32,
+    stop_sent_at: Option<std::time::Instant>,
+    stop_to_close: Option<std::time::Duration>,
+    closed_by_server: bool,
+}
+
+impl SessionDiagnostics {
+    fn new(session_id: &str) -> Self {
+        Self {
+            session_id: session_id.to_string(),
+            started: std::time::Instant::now(),
+            audio_bytes_sent: 0,
+            acked_bytes: 0,
+            first_ack_after: None,
+            server_messages: 0,
+            partials: 0,
+            finals: 0,
+            stop_sent_at: None,
+            stop_to_close: None,
+            closed_by_server: false,
+        }
+    }
+
+    fn on_transcript(&mut self, event: &TranscriptionEvent) {
+        match event {
+            TranscriptionEvent::Partial { .. } => self.partials += 1,
+            TranscriptionEvent::Final { .. } => self.finals += 1,
+            _ => {}
+        }
+    }
+
+    fn on_ack(&mut self, end: u64) {
+        self.acked_bytes = self.acked_bytes.max(end);
+        if self.first_ack_after.is_none() {
+            let elapsed = self.started.elapsed();
+            self.first_ack_after = Some(elapsed);
+            log::info!(
+                "[gladia-ws] (session id={}) first audio acknowledged after {}ms",
+                self.session_id,
+                elapsed.as_millis()
+            );
+        }
+    }
+
+    fn on_stop_sent(&mut self) {
+        self.stop_sent_at
+            .get_or_insert_with(std::time::Instant::now);
+    }
+
+    fn on_server_close(&mut self) {
+        self.closed_by_server = true;
+        self.stop_to_close = self.stop_sent_at.map(|at| at.elapsed());
+    }
+
+    fn summary(&self) -> String {
+        let stop = match (self.stop_sent_at, self.stop_to_close) {
+            (None, _) => "stop not sent".to_string(),
+            (Some(_), Some(after)) => format!("stop->close={}ms", after.as_millis()),
+            (Some(at), None) => {
+                format!("no server close {}ms after stop", at.elapsed().as_millis())
+            }
+        };
+        format!(
+            "duration={}ms, audio sent={} bytes, acked={} bytes, first ack={}, server messages={} ({} partials, {} finals), {stop}",
+            self.started.elapsed().as_millis(),
+            self.audio_bytes_sent,
+            self.acked_bytes,
+            self.first_ack_after
+                .map_or_else(|| "none".to_string(), |d| format!("{}ms", d.as_millis())),
+            self.server_messages,
+            self.partials,
+            self.finals,
+        )
+    }
+
+    /// Why this session looks wrong, if it does.
+    fn anomaly(&self) -> Option<&'static str> {
+        if self.audio_bytes_sent > 0 && self.server_messages == 0 {
+            Some("Gladia sent no message for the audio it received")
+        } else if self.audio_bytes_sent > 0 && self.acked_bytes == 0 {
+            Some("Gladia acknowledged none of the audio sent")
+        } else if self.stop_sent_at.is_some() && !self.closed_by_server {
+            Some("Gladia did not close the session after stop_recording")
+        } else {
+            None
+        }
+    }
+}
+
+impl Drop for SessionDiagnostics {
+    fn drop(&mut self) {
+        let summary = self.summary();
+        match self.anomaly() {
+            Some(why) => log::warn!(
+                "[gladia-ws] (session id={}) diagnostics: {why}; {summary}",
+                self.session_id
+            ),
+            None => log::info!(
+                "[gladia-ws] (session id={}) diagnostics: {summary}",
+                self.session_id
+            ),
+        }
+    }
+}
+
 /// Drive a session's WebSocket: forward audio, deliver transcripts, and
 /// reconnect to the same URL (replaying unacknowledged audio) when the
 /// connection drops, as Gladia's reconnection protocol requires.
@@ -409,6 +525,7 @@ async fn run_session_socket(
     let mut resend = ResendBuffer::default();
     let mut stop_sent = false;
     let mut reconnects = 0u32;
+    let mut diagnostics = SessionDiagnostics::new(&session_id);
 
     let failure = loop {
         let (mut sender, mut receiver) = stream.split();
@@ -433,13 +550,19 @@ async fn run_session_socket(
             None => loop {
                 tokio::select! {
                     result = receiver.next() => match result {
-                        Some(Ok(Message::Text(text))) => match parse_server_message(&text) {
+                        Some(Ok(Message::Text(text))) => {
+                            diagnostics.server_messages += 1;
+                            match parse_server_message(&text) {
                             Ok(Incoming::Transcript(event)) => {
+                                diagnostics.on_transcript(&event);
                                 if let Some(events) = events.as_ref() {
                                     let _ = events.send(event);
                                 }
                             }
-                            Ok(Incoming::Acknowledged(end)) => resend.acknowledge(end),
+                            Ok(Incoming::Acknowledged(end)) => {
+                                diagnostics.on_ack(end);
+                                resend.acknowledge(end);
+                            }
                             Ok(Incoming::Error(reason)) => {
                                 log::error!("[gladia-ws] (session id={session_id}) server error: {reason}");
                                 break ConnectionOutcome::Failed(format!("Gladia error: {reason}"));
@@ -448,11 +571,13 @@ async fn run_session_socket(
                             Err(error) => log::warn!(
                                 "[gladia-ws] (session id={session_id}) unrecognised message ({error}): {text}"
                             ),
-                        },
+                            }
+                        }
                         Some(Ok(Message::Ping(payload))) => {
                             let _ = sender.send(Message::Pong(payload)).await;
                         }
                         Some(Ok(Message::Close(frame))) => {
+                            diagnostics.on_server_close();
                             log::info!("[gladia-ws] (session id={session_id}) server closed: {frame:?}");
                             break close_outcome(frame);
                         }
@@ -464,10 +589,12 @@ async fn run_session_socket(
                         let sent = match message {
                             Some(Outgoing::Audio(audio)) => {
                                 resend.push(&audio);
+                                diagnostics.audio_bytes_sent += audio.len() as u64;
                                 sender.send(audio_chunk_message(&audio)).await
                             }
                             Some(Outgoing::StopRecording) => {
                                 stop_sent = true;
+                                diagnostics.on_stop_sent();
                                 sender.send(stop_recording_message()).await
                             }
                             // The client closed the session.
@@ -986,6 +1113,41 @@ mod tests {
     use tokio::io::{AsyncReadExt, AsyncWriteExt};
     use tokio::net::TcpListener;
     use tokio_tungstenite::tungstenite::protocol::frame::coding::CloseCode;
+
+    #[test]
+    fn session_diagnostics_flag_a_server_that_never_answers() {
+        let mut silent = SessionDiagnostics::new("s");
+        silent.audio_bytes_sent = 96_000;
+        silent.on_stop_sent();
+        assert_eq!(
+            silent.anomaly(),
+            Some("Gladia sent no message for the audio it received")
+        );
+        assert!(silent.summary().contains("first ack=none"));
+        assert!(silent.summary().contains("no server close"));
+
+        let mut unacked = SessionDiagnostics::new("s");
+        unacked.audio_bytes_sent = 96_000;
+        unacked.server_messages = 1;
+        assert_eq!(
+            unacked.anomaly(),
+            Some("Gladia acknowledged none of the audio sent")
+        );
+
+        let mut unclosed = SessionDiagnostics::new("s");
+        unclosed.audio_bytes_sent = 96_000;
+        unclosed.server_messages = 3;
+        unclosed.on_ack(96_000);
+        unclosed.on_stop_sent();
+        assert_eq!(
+            unclosed.anomaly(),
+            Some("Gladia did not close the session after stop_recording")
+        );
+
+        unclosed.on_server_close();
+        assert_eq!(unclosed.anomaly(), None);
+        assert!(unclosed.summary().contains("stop->close="));
+    }
 
     /// Serve one HTTP request with `status_line` and return its request line.
     async fn serve_once(listener: TcpListener, status_line: &'static str) -> String {

@@ -778,8 +778,10 @@ async fn start_audio_capture(
         // sample_rate Hz × 2 bytes/sample × 1 channel × 100 ms
         let chunk_bytes = (sample_rate as usize * 2 * 100) / 1000;
         let mut buf: Vec<u8> = Vec::with_capacity(chunk_bytes * 2);
+        let mut levels = audio::AudioLevelStats::default();
 
         while let Some(data) = async_rx.recv().await {
+            levels.observe(&data);
             buf.extend_from_slice(&data);
             while buf.len() >= chunk_bytes {
                 let chunk: Vec<u8> = buf.drain(..chunk_bytes).collect();
@@ -797,6 +799,9 @@ async fn start_audio_capture(
         }
 
         log::info!("audio: sender task drained");
+        // Detached: the permission probe spawns a process, and stop_dictation
+        // waits on this task before sending stop_recording.
+        tokio::spawn(log_audio_levels(levels, sample_rate));
     });
     *state.audio_sender.lock().await = Some(sender_task);
 
@@ -813,6 +818,36 @@ mod readiness_tests {
         assert!(gate.observe());
         assert!(!gate.observe());
         assert!(!gate.observe());
+    }
+}
+
+/// Log the level of the audio a dictation sent, and warn when it was silent:
+/// macOS hands an app without microphone permission all-zero buffers, which
+/// otherwise only shows up as an empty transcript.
+async fn log_audio_levels(levels: audio::AudioLevelStats, sample_rate: u32) {
+    let seconds = levels.samples() as f64 / sample_rate.max(1) as f64;
+    let summary = format!(
+        "{seconds:.1}s, peak={:.1} dBFS, rms={:.1} dBFS",
+        levels.peak_dbfs(),
+        levels.rms_dbfs()
+    );
+    match levels.verdict() {
+        audio::AudioLevelVerdict::Ok => log::info!("audio: dictation level {summary}"),
+        audio::AudioLevelVerdict::Quiet => log::warn!(
+            "audio: dictation level very low ({summary}); check the microphone input volume"
+        ),
+        audio::AudioLevelVerdict::NoAudio => {
+            log::warn!("audio: no audio captured during this dictation")
+        }
+        audio::AudioLevelVerdict::Silent => {
+            let permission = tokio::task::spawn_blocking(microphone_permission::check_status_fresh)
+                .await
+                .unwrap_or_else(|_| "unknown".to_string());
+            log::warn!(
+                "audio: dictation was digital silence ({summary}); microphone permission={permission} \
+                 (macOS sends silence when permission is missing, or the input is muted)"
+            );
+        }
     }
 }
 

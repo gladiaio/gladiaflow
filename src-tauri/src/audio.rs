@@ -266,6 +266,79 @@ pub struct AudioChunk {
     pub data: Vec<u8>,
 }
 
+/// Peak below which a dictation's audio is treated as digital silence: macOS
+/// delivers all-zero buffers when the app lacks microphone permission.
+const SILENT_PEAK_DBFS: f64 = -80.0;
+/// Peak below which speech is too quiet to transcribe reliably.
+const QUIET_PEAK_DBFS: f64 = -45.0;
+
+/// Level of the audio one dictation sent to Gladia, measured on the 16-bit
+/// little-endian PCM actually sent, so a silent or muted microphone shows up
+/// in the logs instead of as an empty transcript.
+#[derive(Debug, Default)]
+pub struct AudioLevelStats {
+    samples: u64,
+    peak: u16,
+    sum_squares: f64,
+}
+
+/// What a dictation's audio level says about the microphone.
+#[derive(Debug, PartialEq, Eq)]
+pub enum AudioLevelVerdict {
+    NoAudio,
+    Silent,
+    Quiet,
+    Ok,
+}
+
+impl AudioLevelStats {
+    pub fn observe(&mut self, pcm_le_bytes: &[u8]) {
+        for pair in pcm_le_bytes.chunks_exact(2) {
+            let sample = i16::from_le_bytes([pair[0], pair[1]]);
+            let magnitude = sample.unsigned_abs();
+            self.peak = self.peak.max(magnitude);
+            let normalized = sample as f64 / 32768.0;
+            self.sum_squares += normalized * normalized;
+            self.samples += 1;
+        }
+    }
+
+    pub fn samples(&self) -> u64 {
+        self.samples
+    }
+
+    pub fn peak_dbfs(&self) -> f64 {
+        to_dbfs(self.peak as f64 / 32768.0)
+    }
+
+    pub fn rms_dbfs(&self) -> f64 {
+        if self.samples == 0 {
+            return f64::NEG_INFINITY;
+        }
+        to_dbfs((self.sum_squares / self.samples as f64).sqrt())
+    }
+
+    pub fn verdict(&self) -> AudioLevelVerdict {
+        if self.samples == 0 {
+            AudioLevelVerdict::NoAudio
+        } else if self.peak_dbfs() < SILENT_PEAK_DBFS {
+            AudioLevelVerdict::Silent
+        } else if self.peak_dbfs() < QUIET_PEAK_DBFS {
+            AudioLevelVerdict::Quiet
+        } else {
+            AudioLevelVerdict::Ok
+        }
+    }
+}
+
+fn to_dbfs(amplitude: f64) -> f64 {
+    if amplitude <= 0.0 {
+        f64::NEG_INFINITY
+    } else {
+        20.0 * amplitude.log10()
+    }
+}
+
 // Keep software gain modest: aggressive fixed gain clips speech and hurts ASR.
 const MAX_SOFTWARE_PREAMP_GAIN: f32 = 1.25;
 const TARGET_RMS: f32 = 0.12;
@@ -973,6 +1046,35 @@ impl Default for AudioCapture {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn pcm(samples: &[i16]) -> Vec<u8> {
+        samples.iter().flat_map(|s| s.to_le_bytes()).collect()
+    }
+
+    #[test]
+    fn level_stats_flag_missing_and_silent_audio() {
+        let stats = AudioLevelStats::default();
+        assert_eq!(stats.verdict(), AudioLevelVerdict::NoAudio);
+
+        let mut stats = AudioLevelStats::default();
+        stats.observe(&pcm(&[0; 1600]));
+        assert_eq!(stats.samples(), 1600);
+        assert_eq!(stats.peak_dbfs(), f64::NEG_INFINITY);
+        assert_eq!(stats.verdict(), AudioLevelVerdict::Silent);
+    }
+
+    #[test]
+    fn level_stats_measure_peak_and_rms() {
+        let mut stats = AudioLevelStats::default();
+        stats.observe(&pcm(&[16384, -16384, 16384, -16384]));
+        assert!((stats.peak_dbfs() - -6.02).abs() < 0.01);
+        assert!((stats.rms_dbfs() - -6.02).abs() < 0.01);
+        assert_eq!(stats.verdict(), AudioLevelVerdict::Ok);
+
+        let mut quiet = AudioLevelStats::default();
+        quiet.observe(&pcm(&[50, -50]));
+        assert_eq!(quiet.verdict(), AudioLevelVerdict::Quiet);
+    }
 
     fn stream_instant_nanos(nanos: u64) -> cpal::StreamInstant {
         cpal::StreamInstant::new(
