@@ -950,6 +950,15 @@ textarea {
   flex-shrink: 0;
 }
 
+.transcription-history-open-disabled {
+  display: inline-flex;
+  cursor: not-allowed;
+}
+
+.transcription-history-open-disabled .btn:disabled {
+  pointer-events: none;
+}
+
 .transcription-history-card {
   margin-top: var(--space-4);
 }

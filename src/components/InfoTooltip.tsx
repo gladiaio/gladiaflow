@@ -4,6 +4,8 @@ import {
   useId,
   useRef,
   useState,
+  type KeyboardEvent as ReactKeyboardEvent,
+  type MouseEvent as ReactMouseEvent,
   type ReactNode,
 } from "react";
 import { createPortal } from "react-dom";
@@ -21,29 +23,40 @@ type Coords = {
 };
 
 /**
- * Hover/focus info bubble. The tooltip is rendered in a portal with fixed
- * positioning so it escapes the scrollable settings container (which has
- * `overflow-y: auto` and would otherwise clip it). Placement flips between
- * above/below the icon depending on the room available, and is clamped
- * horizontally to the viewport.
+ * Hover/focus bubble around any trigger. Native `title` tooltips don't show
+ * in the app's webview, so this one is drawn by hand. The bubble is rendered
+ * in a portal with fixed positioning so it escapes scrollable containers
+ * (which have `overflow-y: auto` and would otherwise clip it). Placement
+ * flips between above/below the trigger depending on the room available, and
+ * is clamped horizontally to the viewport.
  */
-export function InfoTooltip({
-  label,
+export function Tooltip({
+  content,
   children,
+  className,
+  label,
+  role,
+  onClick,
+  onKeyDown,
 }: {
-  label: string;
+  content: ReactNode;
   children: ReactNode;
+  className?: string;
+  label?: string;
+  role?: string;
+  onClick?: (event: ReactMouseEvent<HTMLSpanElement>) => void;
+  onKeyDown?: (event: ReactKeyboardEvent<HTMLSpanElement>) => void;
 }) {
-  const iconRef = useRef<HTMLSpanElement>(null);
+  const triggerRef = useRef<HTMLSpanElement>(null);
   const [open, setOpen] = useState(false);
   const [coords, setCoords] = useState<Coords | null>(null);
   const tooltipId = useId();
 
   const updatePosition = useCallback(() => {
-    const icon = iconRef.current;
-    if (!icon) return;
+    const trigger = triggerRef.current;
+    if (!trigger) return;
 
-    const rect = icon.getBoundingClientRect();
+    const rect = trigger.getBoundingClientRect();
     const centerX = rect.left + rect.width / 2;
     const left = Math.max(
       VIEWPORT_MARGIN,
@@ -53,8 +66,8 @@ export function InfoTooltip({
       ),
     );
 
-    // Prefer showing above the icon, but flip below when there isn't enough
-    // room near the top of the window.
+    // Prefer showing above the trigger, but flip below when there isn't
+    // enough room near the top of the window.
     const spaceAbove = rect.top;
     const spaceBelow = window.innerHeight - rect.bottom;
     const placement: Placement =
@@ -94,18 +107,20 @@ export function InfoTooltip({
 
   return (
     <span
-      ref={iconRef}
-      className="info-icon"
+      ref={triggerRef}
+      className={className}
       aria-label={label}
       tabIndex={0}
-      role="img"
+      role={role}
       aria-describedby={open ? tooltipId : undefined}
       onMouseEnter={show}
       onMouseLeave={hide}
       onFocus={show}
       onBlur={hide}
+      onClick={onClick}
+      onKeyDown={onKeyDown}
     >
-      i
+      {children}
       {open &&
         coords &&
         createPortal(
@@ -118,10 +133,25 @@ export function InfoTooltip({
               top: `${coords.top}px`,
             }}
           >
-            {children}
+            {content}
           </span>,
           document.body,
         )}
     </span>
+  );
+}
+
+/** "i" icon showing `children` in a tooltip on hover/focus. */
+export function InfoTooltip({
+  label,
+  children,
+}: {
+  label: string;
+  children: ReactNode;
+}) {
+  return (
+    <Tooltip className="info-icon" label={label} role="img" content={children}>
+      i
+    </Tooltip>
   );
 }

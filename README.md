@@ -163,7 +163,7 @@ GladiaFlow is a local desktop client. It does not operate its own cloud backend 
 | Data | What happens |
 | --- | --- |
 | Microphone audio | During an active dictation session, PCM audio is streamed over WebSocket to the Gladia Live Transcription API. GladiaFlow does not save audio files locally. |
-| Transcripts | Text returns from Gladia. Cleaned transcript text and the Gladia session ID are stored locally in SQLite (`history.db` in the app config directory). |
+| Transcripts | Text returns from Gladia. Cleaned transcript text, the Gladia session ID and the API URL it ran on are stored locally in SQLite (`history.db` in the app config directory). |
 | Settings and API key | Stored locally in `config.json` in the user config directory (API key, hotkey, languages, custom vocabulary, and related preferences). |
 | Clipboard | Used transiently to paste transcribed text into the focused app. An optional setting can leave the final transcript on the clipboard. |
 
