@@ -46,6 +46,19 @@ For capture or lifecycle changes, also run:
 cargo clippy --manifest-path src-tauri/Cargo.toml --all-targets -- -D warnings
 ```
 
+### Webview Content Security Policy
+
+The webview can call privileged Tauri commands (the Gladia API key, URL openers), so `src-tauri/tauri.conf.json` sets a strict CSP in `app.security.csp`:
+
+- Scripts, styles and fonts load only from the bundled app (`'self'`). No inline scripts, no `eval`. Tauri adds hashes and nonces for its own injected scripts at build time.
+- Images: the bundle plus `data:` (CSS inline SVG icons).
+- `connect-src` allows only Tauri IPC (`ipc:` and `http://ipc.localhost`). The webview never calls Gladia or any other host directly: network traffic goes through Rust commands, and links open through `open_url`.
+- No plugins, frames, forms or `<base>` (`object-src`, `frame-src`, `frame-ancestors`, `form-action`, `base-uri` are `'none'`).
+
+`app.security.devCsp` applies to `npm run tauri:dev` only. It also allows inline scripts and styles plus `ws://localhost:1420`, which Vite and React Fast Refresh need for HMR.
+
+If a change needs a new source (a remote image, a direct `fetch`), prefer routing it through a Rust command. Otherwise, add the narrowest source to the CSP in the same PR and explain why.
+
 ## Pull requests
 
 Open a PR that explains:
