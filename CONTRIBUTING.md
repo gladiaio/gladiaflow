@@ -52,7 +52,7 @@ The webview can call privileged Tauri commands (the Gladia API key, URL openers)
 
 - Scripts, styles and fonts load only from the bundled app (`'self'`). No inline scripts, no `eval`. Tauri adds hashes and nonces for its own injected scripts at build time.
 - Images: the bundle plus `data:` (CSS inline SVG icons).
-- `connect-src` allows only Tauri IPC (`ipc:` and `http://ipc.localhost`). The webview never calls Gladia or any other host directly: network traffic goes through Rust commands, and links open through `open_url`.
+- `connect-src` allows only Tauri IPC (`ipc:` and `http://ipc.localhost`). The webview never calls Gladia or any other host directly: network traffic goes through Rust commands, and links open through the `open_external_url` command.
 - No plugins, frames, forms or `<base>` (`object-src`, `frame-src`, `frame-ancestors`, `form-action`, `base-uri` are `'none'`).
 
 `app.security.devCsp` applies to `npm run tauri:dev` only. It also allows inline scripts and styles plus `ws://localhost:1420`, which Vite and React Fast Refresh need for HMR.
