@@ -168,6 +168,9 @@ jobs:
 
   build:
     needs: [context, verify]
+    # Trust gate for the signing secrets: the `release` environment holds them, only deploys
+    # from `main` and waits for a release maintainer's approval. See CONTRIBUTING.md.
+    environment: release
     strategy:
       fail-fast: false
       matrix:
